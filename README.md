@@ -68,6 +68,14 @@ On first run, the config file path itself is added as favorite id `1`.
 
 Full documentation lives in `docs/`.
 
+## Contributing
+
+See `CONTRIBUTING.md` for development and contribution guidelines.
+
+## Code of Conduct
+
+See `CODE_OF_CONDUCT.md`.
+
 ## Security
 
 This repo uses `git-secrets` and ASP preflight checks to prevent credential leaks.

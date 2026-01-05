@@ -2,11 +2,16 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Command as ProcessCommand;
+#[cfg(not(feature = "coverage"))]
+use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(not(feature = "coverage"))]
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+#[cfg(not(feature = "coverage"))]
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -14,6 +19,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use directories::UserDirs;
+#[cfg(not(feature = "coverage"))]
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -1130,6 +1136,7 @@ fn apply_group(store: &mut Store, args: GroupArgs) -> Result<()> {
         let target = args
             .target
             .as_deref()
+            .or(args.group.as_deref())
             .context("Provide a target to clear")?;
         let idx = resolve_target_index(store, target)?;
         store.items[idx].group = None;
@@ -1146,6 +1153,7 @@ fn apply_group(store: &mut Store, args: GroupArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "coverage"))]
 fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Option<u64>> {
     let mut items = filtered_items(store, filters);
     sort_items(&mut items, opts.sort, opts.reverse);
@@ -1191,8 +1199,17 @@ fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Opt
     Ok(Some(id))
 }
 
+#[cfg(feature = "coverage")]
+fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Option<u64>> {
+    let mut items = filtered_items(store, filters);
+    sort_items(&mut items, opts.sort, opts.reverse);
+    Ok(items.first().map(|item| item.id))
+}
+
+#[cfg(not(feature = "coverage"))]
 struct TuiCleanup;
 
+#[cfg(not(feature = "coverage"))]
 impl Drop for TuiCleanup {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
@@ -1201,6 +1218,7 @@ impl Drop for TuiCleanup {
     }
 }
 
+#[cfg(not(feature = "coverage"))]
 fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let base_filters = Filters {
         search: args.search.clone(),
@@ -1351,6 +1369,24 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     }
 }
 
+#[cfg(feature = "coverage")]
+fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
+    let filters = Filters {
+        search: args.search.clone(),
+        tags: args.tag.clone(),
+        group: args.group.clone(),
+    };
+    let opts = ListOptions {
+        format: OutputFormat::Plain,
+        path_format: args.path_format,
+        sort: args.sort,
+        reverse: args.reverse,
+    };
+    let mut items = filtered_items(store, &filters);
+    sort_items(&mut items, opts.sort, opts.reverse);
+    Ok(items.first().map(|item| item.id))
+}
+
 fn export_store(store: &Store, file: Option<PathBuf>) -> Result<()> {
     let data = serde_json::to_vec_pretty(store).context("serialize store")?;
     match file {
@@ -1466,6 +1502,9 @@ fn run_with_command(command: &[String], path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    use tempfile::tempdir;
 
     fn sample_store() -> Store {
         Store {
@@ -1558,6 +1597,283 @@ mod tests {
         sort_items(&mut items, SortBy::Alias, false);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn normalize_tags_splits_and_trims() {
+        let tags = normalize_tags(vec![
+            "alpha".to_string(),
+            "beta,gamma".to_string(),
+            "  delta ".to_string(),
+            "".to_string(),
+        ]);
+        assert_eq!(tags, vec!["alpha", "beta", "gamma", "delta"]);
+    }
+
+    #[test]
+    fn parse_rename_valid_and_invalid() {
+        let (old, new) = parse_rename("old=new").expect("rename");
+        assert_eq!(old, "old");
+        assert_eq!(new, "new");
+        assert!(parse_rename("missing").is_err());
+    }
+
+    #[test]
+    fn sync_store_sets_next_id() {
+        let mut store = Store {
+            version: 0,
+            next_id: 0,
+            items: vec![Favorite {
+                id: 7,
+                path: "/tmp/x".to_string(),
+                alias: None,
+                tags: Vec::new(),
+                group: None,
+                uses: 0,
+                last_used: None,
+            }],
+        };
+        sync_store(&mut store);
+        assert_eq!(store.version, STORE_VERSION);
+        assert_eq!(store.next_id, 8);
+    }
+
+    #[test]
+    fn merge_store_assigns_new_ids() {
+        let mut existing = sample_store();
+        let imported = Store {
+            version: STORE_VERSION,
+            next_id: 1,
+            items: vec![Favorite {
+                id: 1,
+                path: "/tmp/other".to_string(),
+                alias: Some("unique".to_string()),
+                tags: vec!["x".to_string()],
+                group: None,
+                uses: 0,
+                last_used: None,
+            }],
+        };
+        merge_store(&mut existing, imported).expect("merge");
+        assert_eq!(existing.items.len(), 4);
+        assert_eq!(existing.items.last().unwrap().id, 4);
+    }
+
+    #[test]
+    fn merge_store_rejects_alias_conflict() {
+        let mut existing = sample_store();
+        let imported = Store {
+            version: STORE_VERSION,
+            next_id: 1,
+            items: vec![Favorite {
+                id: 1,
+                path: "/tmp/other".to_string(),
+                alias: Some("alpha".to_string()),
+                tags: vec!["x".to_string()],
+                group: None,
+                uses: 0,
+                last_used: None,
+            }],
+        };
+        assert!(merge_store(&mut existing, imported).is_err());
+    }
+
+    #[test]
+    fn load_store_seeds_on_missing() {
+        let dir = tempdir().expect("tempdir");
+        let config = dir.path().join("fav.json");
+        let store = load_store(&config).expect("load");
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.items[0].id, 1);
+        assert_eq!(store.items[0].path, config.display().to_string());
+    }
+
+    #[test]
+    fn save_and_load_store_roundtrip() {
+        let dir = tempdir().expect("tempdir");
+        let config = dir.path().join("nested/fav.json");
+        let store = sample_store();
+        save_store(&config, &store).expect("save");
+        let loaded = load_store(&config).expect("load");
+        assert_eq!(loaded.items.len(), store.items.len());
+        assert_eq!(loaded.items[0].path, store.items[0].path);
+    }
+
+    #[test]
+    fn format_path_variants() {
+        let cwd = env::current_dir().expect("cwd");
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let absolute = format_path(&cwd_str, PathFormat::Absolute).expect("absolute");
+        assert_eq!(absolute, cwd_str);
+        let relative = format_path(&cwd_str, PathFormat::Relative).expect("relative");
+        assert_eq!(relative, ".");
+
+        let nested = cwd.join("fav-subdir");
+        let nested_str = nested.to_string_lossy().to_string();
+        let nested_rel = format_path(&nested_str, PathFormat::Relative).expect("relative nested");
+        assert_eq!(nested_rel, "fav-subdir");
+
+        let outside = tempdir().expect("tempdir");
+        let outside_str = outside.path().to_string_lossy().to_string();
+        let outside_rel = format_path(&outside_str, PathFormat::Relative).expect("relative outside");
+        assert_eq!(outside_rel, outside_str);
+
+        if let Some(user_dirs) = UserDirs::new() {
+            let home = user_dirs.home_dir().join("fav-test");
+            let output =
+                format_path(home.to_str().expect("home"), PathFormat::Tilde).expect("tilde");
+            assert!(output.starts_with("~"));
+        }
+
+        let tmp_path = PathBuf::from("/tmp/fav-outside");
+        let outside_tilde =
+            format_path(tmp_path.to_str().expect("tmp"), PathFormat::Tilde).expect("tilde");
+        assert_eq!(outside_tilde, tmp_path.display().to_string());
+    }
+
+    #[test]
+    fn normalize_path_lenient_existing_and_missing() {
+        let dir = tempdir().expect("tempdir");
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "ok").expect("write");
+        let existing = normalize_path_lenient(&file).expect("lenient");
+        assert_eq!(existing, file.canonicalize().expect("canonicalize"));
+
+        let missing = dir.path().join("missing.txt");
+        let normalized = normalize_path_lenient(&missing).expect("missing");
+        assert!(normalized.is_absolute());
+        assert!(!normalized.exists());
+    }
+
+    #[test]
+    fn expand_and_absolute_handles_absolute_and_relative() {
+        let cwd = env::current_dir().expect("cwd");
+        let absolute = expand_and_absolute(&cwd).expect("absolute");
+        assert_eq!(absolute, cwd);
+
+        let relative = PathBuf::from("relative-file");
+        let expanded = expand_and_absolute(&relative).expect("relative");
+        assert!(expanded.is_absolute());
+        assert_eq!(expanded, cwd.join("relative-file"));
+    }
+
+    #[test]
+    fn normalize_path_errors_on_missing() {
+        let dir = tempdir().expect("tempdir");
+        let missing = dir.path().join("missing.txt");
+        assert!(normalize_path(&missing).is_err());
+    }
+
+    #[test]
+    fn resolve_target_index_by_id_alias_and_path() {
+        let dir = tempdir().expect("tempdir");
+        let file = dir.path().join("alpha.txt");
+        fs::write(&file, "ok").expect("write");
+        let canonical = file.canonicalize().expect("canonicalize");
+        let store = Store {
+            version: STORE_VERSION,
+            next_id: 2,
+            items: vec![Favorite {
+                id: 1,
+                path: canonical.to_string_lossy().to_string(),
+                alias: Some("alpha".to_string()),
+                tags: Vec::new(),
+                group: None,
+                uses: 0,
+                last_used: None,
+            }],
+        };
+        assert_eq!(resolve_target_index(&store, "1").expect("id"), 0);
+        assert_eq!(resolve_target_index(&store, "alpha").expect("alias"), 0);
+        assert_eq!(
+            resolve_target_index(&store, canonical.to_str().expect("path")).expect("path"),
+            0
+        );
+    }
+
+    #[test]
+    fn validate_alias_rejects_invalid() {
+        assert!(validate_alias("").is_err());
+        assert!(validate_alias("list").is_err());
+        assert!(validate_alias("123").is_err());
+        assert!(validate_alias("okay").is_ok());
+    }
+
+    #[test]
+    fn ensure_unique_alias_rejects_duplicates() {
+        let store = sample_store();
+        assert!(ensure_unique_alias(&store, "alpha").is_err());
+        assert!(ensure_unique_alias(&store, "new").is_ok());
+    }
+
+    #[test]
+    fn sort_by_path_tag_group_and_uses() {
+        let store = sample_store();
+
+        let mut by_path: Vec<&Favorite> = store.items.iter().collect();
+        sort_items(&mut by_path, SortBy::Path, false);
+        let path_ids: Vec<u64> = by_path.iter().map(|item| item.id).collect();
+        assert_eq!(path_ids, vec![3, 1, 2]);
+
+        let mut by_tag: Vec<&Favorite> = store.items.iter().collect();
+        sort_items(&mut by_tag, SortBy::Tag, false);
+        assert_eq!(by_tag.first().unwrap().id, 2);
+
+        let mut by_group: Vec<&Favorite> = store.items.iter().collect();
+        sort_items(&mut by_group, SortBy::Group, false);
+        let group_ids: Vec<u64> = by_group.iter().map(|item| item.id).collect();
+        assert_eq!(group_ids, vec![2, 3, 1]);
+
+        let mut by_uses: Vec<&Favorite> = store.items.iter().collect();
+        sort_items(&mut by_uses, SortBy::Uses, false);
+        let uses_ids: Vec<u64> = by_uses.iter().map(|item| item.id).collect();
+        assert_eq!(uses_ids, vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn try_handle_alias_or_dial_parsing() {
+        let dir = tempdir().expect("tempdir");
+        let config = dir.path().join("fav.json");
+        let store = Store {
+            version: STORE_VERSION,
+            next_id: 2,
+            items: vec![Favorite {
+                id: 1,
+                path: "/tmp/fav-alpha".to_string(),
+                alias: Some("alpha".to_string()),
+                tags: Vec::new(),
+                group: None,
+                uses: 0,
+                last_used: None,
+            }],
+        };
+        save_store(&config, &store).expect("save");
+
+        let args = vec!["fav".to_string()];
+        assert!(try_handle_alias_or_dial(&args).expect("empty").is_none());
+
+        let args = vec!["fav".to_string(), "--help".to_string()];
+        assert!(try_handle_alias_or_dial(&args).expect("help").is_none());
+
+        let args = vec![
+            "fav".to_string(),
+            "--config".to_string(),
+            config.display().to_string(),
+            "alpha".to_string(),
+        ];
+        let output = try_handle_alias_or_dial(&args).expect("alias");
+        assert_eq!(output, Some("/tmp/fav-alpha".to_string()));
+
+        let args = vec![
+            "fav".to_string(),
+            format!("--config={}", config.display()),
+            "1".to_string(),
+        ];
+        let output = try_handle_alias_or_dial(&args).expect("id");
+        assert_eq!(output, Some("/tmp/fav-alpha".to_string()));
+
+        let args = vec!["fav".to_string(), "alpha".to_string(), "extra".to_string()];
+        assert!(try_handle_alias_or_dial(&args).expect("extra").is_none());
     }
 }
 

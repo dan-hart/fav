@@ -8,3 +8,4 @@ Welcome to the `fav` command line tool. This folder contains detailed docs:
 - `docs/examples.md` - common workflows
 - `docs/data-format.md` - JSON store format and fields
 - `docs/security.md` - security policy and setup
+- `RELEASE.md` - release checklist
