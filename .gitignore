@@ -1,0 +1,52 @@
+# === SECURITY - MANDATORY ===
+# Credentials & Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.kdbx
+.pypirc
+pip.conf
+.npmrc
+
+# Files with sensitive keywords (auto-excluded)
+*private*
+*sensitive*
+*secret*
+*credential*
+*token*
+*password*
+
+# Directories with sensitive content
+P[R]IVATE/
+sensitive/
+.secrets/
+
+# Build system lock files (can contain environment)
+.lock-waf*
+.waf-*
+CMakeCache.txt
+CMakeFiles/
+config.cache
+config.log
+gradle.properties
+local.properties
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# === RUST ===
+/target
+**/*.rs.bk
