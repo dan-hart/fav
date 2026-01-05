@@ -49,7 +49,8 @@ enum Command {
         about = "Add a favorite",
         long_about = "Add a favorite file or directory.\n\
 If no path is provided, the current directory is added.\n\
-Examples:\n  fav add\n  fav add ./notes/todo.md\n  fav add ~/dotfiles --alias dotfiles --tag config --tag work\n"
+Use --id-only for script-friendly output.\n\
+Examples:\n  fav add\n  fav add ./notes/todo.md\n  fav add ~/dotfiles --alias dotfiles --tag config --tag work\n  fav add --id-only\n"
     )]
     Add(AddArgs),
     #[command(
@@ -184,6 +185,9 @@ struct AddArgs {
     /// Tags to apply (repeatable or comma-separated)
     #[arg(short, long, value_delimiter = ',')]
     tag: Vec<String>,
+    /// Print only the id (script-friendly)
+    #[arg(long)]
+    id_only: bool,
 }
 
 #[derive(Args)]
@@ -509,7 +513,21 @@ fn main() -> Result<()> {
             });
             store.items.sort_by_key(|item| item.id);
             save_store(&store_path, &store)?;
-            println!("{id}");
+            if args.id_only {
+                println!("{id}");
+            } else {
+                let item = store.items.last().context("missing added favorite")?;
+                let alias = item.alias.as_deref().unwrap_or("-");
+                let tags = if item.tags.is_empty() {
+                    "-".to_string()
+                } else {
+                    item.tags.join(",")
+                };
+                println!(
+                    "Added favorite {id}: {} (alias: {alias}, tags: {tags})",
+                    format_path(item.path.as_str(), PathFormat::Tilde)?
+                );
+            }
         }
         Command::List(args) => {
             let filters = Filters {
@@ -523,7 +541,10 @@ fn main() -> Result<()> {
                 sort: args.sort,
                 reverse: args.reverse,
             };
-            list_items(&store, &filters, &opts)?;
+            let count = list_items(&store, &filters, &opts)?;
+            if count == 0 {
+                eprintln!("No favorites matched. Try: fav add, fav list, fav search <term>");
+            }
         }
         Command::Search(args) => {
             let filters = Filters {
@@ -537,7 +558,10 @@ fn main() -> Result<()> {
                 sort: args.sort,
                 reverse: args.reverse,
             };
-            list_items(&store, &filters, &opts)?;
+            let count = list_items(&store, &filters, &opts)?;
+            if count == 0 {
+                eprintln!("No matches. Try: fav list --tag <tag> or fav list --group <group>");
+            }
         }
         Command::Dial(args) => {
             let idx = store
@@ -591,6 +615,13 @@ fn main() -> Result<()> {
                 }
             }
             save_store(&store_path, &store)?;
+            let item = &store.items[idx];
+            let tags = if item.tags.is_empty() {
+                "-".to_string()
+            } else {
+                item.tags.join(",")
+            };
+            println!("Updated tags for {}: {tags}", item.id);
         }
         Command::Alias(args) => {
             validate_alias(&args.alias)?;
@@ -598,6 +629,12 @@ fn main() -> Result<()> {
             let idx = resolve_target_index(&store, &args.target)?;
             store.items[idx].alias = Some(args.alias);
             save_store(&store_path, &store)?;
+            let item = &store.items[idx];
+            println!(
+                "Updated alias for {}: {}",
+                item.id,
+                item.alias.as_deref().unwrap_or("-")
+            );
         }
         Command::Tags(args) => {
             list_tags(&store, args.format)?;
@@ -605,6 +642,7 @@ fn main() -> Result<()> {
         Command::Group(args) => {
             apply_group(&mut store, args)?;
             save_store(&store_path, &store)?;
+            println!("Group updated.");
         }
         Command::Groups(args) => {
             list_groups(&store, args.format)?;
@@ -651,7 +689,11 @@ fn main() -> Result<()> {
             }
         }
         Command::Export(args) => {
+            let has_file = args.file.is_some();
             export_store(&store, args.file)?;
+            if has_file {
+                eprintln!("Exported {} favorites.", store.items.len());
+            }
         }
         Command::Import(args) => {
             let imported = import_store(args.file)?;
@@ -662,6 +704,7 @@ fn main() -> Result<()> {
             }
             sync_store(&mut store);
             save_store(&store_path, &store)?;
+            eprintln!("Imported {} favorites.", store.items.len());
         }
         Command::Backup(_args) => {
             let backup_path = backup_store(&store, &store_path)?;
@@ -672,6 +715,7 @@ fn main() -> Result<()> {
             store = imported;
             sync_store(&mut store);
             save_store(&store_path, &store)?;
+            eprintln!("Restored {} favorites.", store.items.len());
         }
         Command::Check(args) => {
             check_missing(&store, args.path_format)?;
@@ -692,6 +736,7 @@ fn main() -> Result<()> {
             let idx = resolve_target_index(&store, &args.target)?;
             store.items.remove(idx);
             save_store(&store_path, &store)?;
+            println!("Removed favorite.");
         }
     }
 
@@ -874,13 +919,14 @@ struct OutputItem {
     last_used: Option<i64>,
 }
 
-fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<()> {
+fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<usize> {
     let mut items = filtered_items(store, filters);
     sort_items(&mut items, opts.sort, opts.reverse);
+    let count = items.len();
 
     match opts.format {
         OutputFormat::Table => {
-            for item in items {
+            for item in &items {
                 let alias = item.alias.as_deref().unwrap_or("-");
                 let group = item.group.as_deref().unwrap_or("-");
                 let tags = if item.tags.is_empty() {
@@ -896,7 +942,7 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<()
             }
         }
         OutputFormat::Plain => {
-            for item in items {
+            for item in &items {
                 let alias = item.alias.as_deref().unwrap_or("-");
                 let group = item.group.as_deref().unwrap_or("-");
                 let tags = if item.tags.is_empty() {
@@ -910,7 +956,7 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<()
         }
         OutputFormat::Json => {
             let output: Vec<OutputItem> = items
-                .into_iter()
+                .iter()
                 .map(|item| OutputItem {
                     id: item.id,
                     alias: item.alias.clone(),
@@ -926,7 +972,7 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<()
             io::stdout().write_all(&data).context("write output")?;
         }
     }
-    Ok(())
+    Ok(count)
 }
 
 fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> {

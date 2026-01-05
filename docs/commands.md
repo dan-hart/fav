@@ -12,10 +12,11 @@
 Add a favorite file or directory.
 
 ```
-fav add [path] [--alias <name>] [--tag <tag>...]
+fav add [path] [--alias <name>] [--tag <tag>...] [--id-only]
 ```
 
 If `path` is omitted, the current directory is used.
+`--id-only` prints only the new id (useful in scripts).
 
 ## list
 
