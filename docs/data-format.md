@@ -12,7 +12,6 @@ The config file is JSON with this shape:
       "path": "/Users/you/.fav.config",
       "alias": null,
       "tags": [],
-      "group": null,
       "uses": 0,
       "last_used": null
     }
@@ -32,6 +31,5 @@ Favorite fields:
 - `path` - absolute path stored at add time
 - `alias` - optional alias string
 - `tags` - list of tag strings
-- `group` - optional group string
-- `uses` - usage count (incremented by dial/alias/pick/with)
+- `uses` - usage count (incremented by get, `fav <id>`, `fav <alias>`, pick, with)
 - `last_used` - UNIX timestamp in seconds

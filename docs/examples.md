@@ -13,25 +13,24 @@ fav with dotfiles -- ls -la
 fav with 3 -- rg "TODO" {}
 ```
 
-## Tags and groups
+## Tags and metadata
 
 ```
 # add tags on creation
 fav add ~/work/project --alias proj --tag work --tag repo
 
-# add a group
-fav group project proj
+# add tags later
+fav meta proj --tag infra
 
-# list by tag or group
+# list by tag
 fav list --tag work
-fav list --group project
 ```
 
 ## Search and pick
 
 ```
-# search by alias, path, tag, or group
-fav search notes
+# search by alias, path, or tag
+fav list --search notes
 
 # interactive selection (requires fzf)
 fav pick --tag work
@@ -40,25 +39,15 @@ fav pick --tag work
 fav tui --tag work
 ```
 
-## Backup and restore
-
-```
-# write a backup
-fav backup
-
-# restore from a backup file
-fav restore ~/.fav.config.backup-1700000000
-```
-
 ## Import and export
 
 ```
 # export to stdout
-fav export > backup.json
+fav io --export > backup.json
 
 # import from file
-fav import --file backup.json
+fav io --import --file backup.json
 
 # merge from stdin
-cat backup.json | fav import --merge
+cat backup.json | fav io --import --merge
 ```

@@ -39,7 +39,7 @@ const STORE_VERSION: u32 = 1;
     about = "Keep track of favorite files and folders",
     long_about = "fav keeps a small, local database of favorite files and folders.\n\
 Use numeric ids (speed-dial) or aliases to print paths quickly.\n\
-Examples:\n  fav add\n  fav add ~/dotfiles --alias dotfiles --tag config\n  fav list --tag work\n  fav 1\n  fav my-config\n"
+Examples:\n  fav add\n  fav add ~/dotfiles --alias dotfiles --tag config\n  fav list --tag work --sort uses\n  fav list --search notes --format json\n  fav 1\n  fav my-config\n  fav with dotfiles -- rg \"TODO\" {}\n"
 )]
 struct Cli {
     /// Path to the favorites config (defaults to ~/.fav.config)
@@ -56,127 +56,70 @@ enum Command {
         long_about = "Add a favorite file or directory.\n\
 If no path is provided, the current directory is added.\n\
 Use --id-only for script-friendly output.\n\
-Examples:\n  fav add\n  fav add ./notes/todo.md\n  fav add ~/dotfiles --alias dotfiles --tag config --tag work\n  fav add --id-only\n"
+Examples:\n  fav add\n  fav add ./notes/todo.md --alias todo --tag notes\n  fav add ~/dotfiles --alias dotfiles --tag config --tag work\n  fav add --id-only\n"
     )]
     Add(AddArgs),
     #[command(
         about = "List favorites",
         long_about = "List all favorites.\n\
 You can filter by tag and/or search term.\n\
-Examples:\n  fav\n  fav list --tag work\n  fav list --search notes\n"
+Examples:\n  fav\n  fav list --tag work\n  fav list --search notes --format json\n  fav list --path-format relative --sort uses\n"
     )]
     List(ListArgs),
     #[command(
-        about = "Search favorites",
-        long_about = "Search favorites by alias, path, or tag.\n\
-Examples:\n  fav search notes\n  fav search config\n"
-    )]
-    Search(SearchArgs),
-    #[command(
-        about = "Print a favorite by id",
-        long_about = "Print the path for a speed-dial id.\n\
+        about = "Print a favorite path",
+        long_about = "Print the path for a favorite by id or alias.\n\
 This is shell-friendly output (path only).\n\
-Examples:\n  fav dial 1\n"
+Examples:\n  fav get 1\n  fav get dotfiles\n  cd \"$(fav get dotfiles)\"\n  fav get 1 --path-format relative\n"
     )]
-    Dial(DialArgs),
+    Get(GetArgs),
     #[command(
-        about = "Add or replace tags",
-        long_about = "Add tags to a favorite, or replace tags with --set.\n\
+        about = "Update metadata",
+        long_about = "Update alias or tags for a favorite.\n\
 The target can be an id, alias, or path.\n\
-Examples:\n  fav tag 1 work,urgent\n  fav tag my-config config --set\n"
+Examples:\n  fav meta 1 --alias dotfiles\n  fav meta 1 --clear-alias\n  fav meta 1 --tag work,urgent\n  fav meta 1 --set-tags work,urgent\n  fav meta 1 --rm-tag urgent\n  fav meta 1 --rename-tag old=new\n"
     )]
-    Tag(TagArgs),
+    Meta(MetaArgs),
     #[command(
-        about = "Set an alias",
-        long_about = "Assign or replace an alias for a favorite.\n\
-The target can be an id, alias, or path.\n\
-Examples:\n  fav alias 1 dotfiles\n  fav alias ~/dotfiles dotfiles\n"
+        about = "Import or export favorites",
+        long_about = "Export favorites to JSON or import them from JSON.\n\
+If no file is provided, export writes to stdout and import reads from stdin.\n\
+Examples:\n  fav io --export > backup.json\n  fav io --export --file backup.json\n  fav io --import --file backup.json\n  cat backup.json | fav io --import --merge\n"
     )]
-    Alias(AliasArgs),
+    Io(IoArgs),
     #[command(
-        about = "List all tags with counts",
-        long_about = "List all tags with counts.\n\
-Examples:\n  fav tags\n"
+        about = "Check or prune missing paths",
+        long_about = "List favorites whose paths no longer exist, or prune them.\n\
+Examples:\n  fav health\n  fav health --path-format absolute\n  fav health --prune\n"
     )]
-    Tags(TagsArgs),
-    #[command(
-        about = "Set or clear a group",
-        long_about = "Assign a group to a favorite, or clear it.\n\
-Examples:\n  fav group project 1\n  fav group --clear 1\n"
-    )]
-    Group(GroupArgs),
-    #[command(
-        about = "List all groups with counts",
-        long_about = "List all groups with counts.\n\
-Examples:\n  fav groups\n"
-    )]
-    Groups(GroupsArgs),
+    Health(HealthArgs),
     #[command(
         about = "Interactively pick a favorite",
         long_about = "Pick a favorite via fzf and print its path.\n\
 Requires `fzf` to be installed.\n\
-Examples:\n  fav pick\n  fav pick --tag work\n"
+Examples:\n  fav pick\n  fav pick --tag work\n  fav pick --path-format absolute --display-path-format relative\n"
     )]
     Pick(PickArgs),
     #[command(
         about = "Browse favorites in a TUI",
         long_about = "Browse favorites in a terminal UI and print the selected path.\n\
 Type to filter, use arrows to move, Enter to select, Esc/Ctrl+C to quit.\n\
-Examples:\n  fav tui\n  fav tui --tag work\n"
+Examples:\n  fav tui\n  fav tui --tag work\n  fav tui --path-format absolute --display-path-format relative\n"
     )]
     Tui(TuiArgs),
-    #[command(
-        about = "Export favorites",
-        long_about = "Export favorites to JSON.\n\
-If no file is provided, output is written to stdout.\n\
-Examples:\n  fav export > backup.json\n  fav export --file backup.json\n"
-    )]
-    Export(ExportArgs),
-    #[command(
-        about = "Import favorites",
-        long_about = "Import favorites from JSON.\n\
-If no file is provided, input is read from stdin.\n\
-Use --merge to add to existing favorites instead of replacing.\n\
-Examples:\n  fav import --file backup.json\n  cat backup.json | fav import --merge\n"
-    )]
-    Import(ImportArgs),
-    #[command(
-        about = "Create a timestamped backup",
-        long_about = "Create a timestamped backup of the favorites store.\n\
-Examples:\n  fav backup\n"
-    )]
-    Backup(BackupArgs),
-    #[command(
-        about = "Restore from a backup file",
-        long_about = "Restore favorites from a JSON backup.\n\
-Examples:\n  fav restore ./favorites-1700000000.json\n"
-    )]
-    Restore(RestoreArgs),
-    #[command(
-        about = "Check for missing paths",
-        long_about = "List favorites whose paths no longer exist.\n\
-Examples:\n  fav check\n"
-    )]
-    Check(CheckArgs),
-    #[command(
-        about = "Prune missing paths",
-        long_about = "Remove favorites whose paths no longer exist.\n\
-Examples:\n  fav prune\n"
-    )]
-    Prune(PruneArgs),
     #[command(
         about = "Run a command with a favorite path",
         long_about = "Run a command using a favorite path.\n\
 If any argument contains {}, it will be replaced with the path.\n\
 Otherwise the path is appended to the end of the command.\n\
-Examples:\n  fav with my-config -- cat\n  fav with 3 -- ls -la {}\n"
+Examples:\n  fav with my-config -- cat\n  fav with 3 -- ls -la {}\n  fav with notes -- rg \"TODO\" {}\n"
     )]
     With(WithArgs),
     #[command(
         aliases = ["remove", "delete", "del"],
         about = "Remove a favorite",
         long_about = "Remove a favorite by id, alias, or path.\n\
-Examples:\n  fav rm 1\n  fav rm dotfiles\n  fav rm ~/dotfiles\n"
+Examples:\n  fav rm 1\n  fav rm dotfiles\n  fav rm ~/dotfiles\n  fav rm ./notes/todo.md\n"
     )]
     Rm(RemoveArgs),
 }
@@ -201,9 +144,6 @@ struct ListArgs {
     /// Filter by tag (repeatable; all tags must match)
     #[arg(long)]
     tag: Vec<String>,
-    /// Filter by group
-    #[arg(long)]
-    group: Option<String>,
     /// Search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
@@ -222,87 +162,36 @@ struct ListArgs {
 }
 
 #[derive(Args)]
-struct SearchArgs {
-    /// Search query (matches alias/path/tags)
-    query: String,
-    /// Filter by tag (repeatable; all tags must match)
-    #[arg(long)]
-    tag: Vec<String>,
-    /// Filter by group
-    #[arg(long)]
-    group: Option<String>,
-    /// Output format
-    #[arg(long, value_enum, default_value = "table")]
-    format: OutputFormat,
-    /// How to render paths
-    #[arg(long, value_enum, default_value = "relative")]
-    path_format: PathFormat,
-    /// Sort by field
-    #[arg(long, value_enum, default_value = "id")]
-    sort: SortBy,
-    /// Reverse sort order
-    #[arg(long)]
-    reverse: bool,
-}
-
-#[derive(Args)]
-struct DialArgs {
-    /// Speed-dial number (shown in `fav list`)
-    id: u64,
+struct GetArgs {
+    /// Target id or alias
+    target: String,
     /// How to render paths
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
 }
 
 #[derive(Args)]
-struct TagArgs {
+struct MetaArgs {
     /// Target id/alias/path
     target: String,
+    /// Set or replace alias
+    #[arg(long)]
+    alias: Option<String>,
+    /// Clear alias
+    #[arg(long)]
+    clear_alias: bool,
     /// Tags to add (repeatable or comma-separated)
-    #[arg(value_delimiter = ',')]
-    tags: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    tag: Vec<String>,
     /// Replace existing tags instead of appending
     #[arg(long)]
-    set: bool,
+    set_tags: bool,
     /// Remove tags (repeatable or comma-separated)
     #[arg(long, value_delimiter = ',')]
-    rm: Vec<String>,
+    rm_tag: Vec<String>,
     /// Rename a tag (format: old=new)
     #[arg(long)]
-    rename: Option<String>,
-}
-
-#[derive(Args)]
-struct AliasArgs {
-    /// Target id/alias/path
-    target: String,
-    /// New alias
-    alias: String,
-}
-
-#[derive(Args)]
-struct TagsArgs {
-    /// Output format
-    #[arg(long, value_enum, default_value = "plain")]
-    format: TagListFormat,
-}
-
-#[derive(Args)]
-struct GroupArgs {
-    /// Group name
-    group: Option<String>,
-    /// Target id/alias/path
-    target: Option<String>,
-    /// Clear the group for a target
-    #[arg(long)]
-    clear: bool,
-}
-
-#[derive(Args)]
-struct GroupsArgs {
-    /// Output format
-    #[arg(long, value_enum, default_value = "plain")]
-    format: TagListFormat,
+    rename_tag: Option<String>,
 }
 
 #[derive(Args)]
@@ -310,9 +199,6 @@ struct PickArgs {
     /// Filter by tag (repeatable; all tags must match)
     #[arg(long)]
     tag: Vec<String>,
-    /// Filter by group
-    #[arg(long)]
-    group: Option<String>,
     /// Search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
@@ -335,9 +221,6 @@ struct TuiArgs {
     /// Filter by tag (repeatable; all tags must match)
     #[arg(long)]
     tag: Vec<String>,
-    /// Filter by group
-    #[arg(long)]
-    group: Option<String>,
     /// Initial search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
@@ -356,40 +239,30 @@ struct TuiArgs {
 }
 
 #[derive(Args)]
-struct ExportArgs {
-    /// Output file (defaults to stdout)
+struct IoArgs {
+    /// Export favorites to JSON
+    #[arg(long)]
+    export: bool,
+    /// Import favorites from JSON
+    #[arg(long)]
+    import: bool,
+    /// File to read/write (defaults to stdin/stdout)
     #[arg(long)]
     file: Option<PathBuf>,
-}
-
-#[derive(Args)]
-struct ImportArgs {
-    /// Input file (defaults to stdin)
-    #[arg(long)]
-    file: Option<PathBuf>,
-    /// Merge into existing favorites instead of replacing
+    /// Merge into existing favorites instead of replacing (import only)
     #[arg(long)]
     merge: bool,
 }
 
 #[derive(Args)]
-struct BackupArgs {}
-
-#[derive(Args)]
-struct RestoreArgs {
-    /// Backup file to restore
-    file: PathBuf,
-}
-
-#[derive(Args)]
-struct CheckArgs {
+struct HealthArgs {
+    /// Prune missing favorites instead of listing them
+    #[arg(long)]
+    prune: bool,
     /// How to render paths
     #[arg(long, value_enum, default_value = "relative")]
     path_format: PathFormat,
 }
-
-#[derive(Args)]
-struct PruneArgs {}
 
 #[derive(Args)]
 struct WithArgs {
@@ -417,12 +290,6 @@ enum OutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum TagListFormat {
-    Plain,
-    Json,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
 enum PathFormat {
     Tilde,
     Absolute,
@@ -435,7 +302,6 @@ enum SortBy {
     Alias,
     Path,
     Tag,
-    Group,
     Recent,
     Uses,
 }
@@ -454,8 +320,6 @@ struct Favorite {
     alias: Option<String>,
     tags: Vec<String>,
     #[serde(default)]
-    group: Option<String>,
-    #[serde(default)]
     uses: u64,
     #[serde(default)]
     last_used: Option<i64>,
@@ -464,7 +328,7 @@ struct Favorite {
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if let Some(result) = try_handle_alias_or_dial(&args)? {
+    if let Some(result) = try_handle_alias_or_get(&args)? {
         println!("{result}");
         return Ok(());
     }
@@ -475,7 +339,6 @@ fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Command::List(ListArgs {
         tag: Vec::new(),
-        group: None,
         search: None,
         format: OutputFormat::Table,
         path_format: PathFormat::Relative,
@@ -519,7 +382,6 @@ fn main() -> Result<()> {
                 path: normalized.to_string_lossy().to_string(),
                 alias: args.alias,
                 tags,
-                group: None,
                 uses: 0,
                 last_used: None,
             });
@@ -545,7 +407,6 @@ fn main() -> Result<()> {
             let filters = Filters {
                 search: args.search.clone(),
                 tags: args.tag.clone(),
-                group: args.group.clone(),
             };
             let opts = ListOptions {
                 format: args.format,
@@ -555,53 +416,53 @@ fn main() -> Result<()> {
             };
             let count = list_items(&store, &filters, &opts)?;
             if count == 0 {
-                eprintln!("No favorites matched. Try: fav add, fav list, fav search <term>");
+                eprintln!("No favorites matched. Try: fav add, fav list --search <term>");
             }
         }
-        Command::Search(args) => {
-            let filters = Filters {
-                search: Some(args.query),
-                tags: args.tag,
-                group: args.group,
-            };
-            let opts = ListOptions {
-                format: args.format,
-                path_format: args.path_format,
-                sort: args.sort,
-                reverse: args.reverse,
-            };
-            let count = list_items(&store, &filters, &opts)?;
-            if count == 0 {
-                eprintln!("No matches. Try: fav list --tag <tag> or fav list --group <group>");
-            }
-        }
-        Command::Dial(args) => {
-            let idx = store
-                .items
-                .iter()
-                .position(|item| item.id == args.id)
-                .context("No favorite with that id")?;
+        Command::Get(args) => {
+            let idx = resolve_target_index(&store, &args.target)?;
             mark_used(&mut store.items[idx]);
             let output = format_path(store.items[idx].path.as_str(), args.path_format)?;
             save_store(&store_path, &store)?;
             println!("{output}");
         }
-        Command::Tag(args) => {
+        Command::Meta(args) => {
             let idx = resolve_target_index(&store, &args.target)?;
-            let actions = (!args.tags.is_empty()) as u8
-                + (!args.rm.is_empty()) as u8
-                + args.rename.is_some() as u8;
-            if actions == 0 {
-                bail!("Provide tags to add, --rm tags to remove, or --rename old=new");
+            let has_alias = args.alias.is_some();
+            let has_clear_alias = args.clear_alias;
+            let has_add_tags = !args.tag.is_empty();
+            let has_rm_tags = !args.rm_tag.is_empty();
+            let has_rename_tag = args.rename_tag.is_some();
+            let tag_actions = has_add_tags as u8 + has_rm_tags as u8 + has_rename_tag as u8;
+            if has_alias && has_clear_alias {
+                bail!("Choose only one of: --alias or --clear-alias");
             }
-            if actions > 1 {
-                bail!("Choose only one of: add tags, --rm, or --rename");
+            if tag_actions > 1 {
+                bail!("Choose only one of: --tag, --rm-tag, or --rename-tag");
             }
-            if args.set && args.tags.is_empty() {
-                bail!("--set can only be used when adding tags");
+            if args.set_tags && !has_add_tags {
+                bail!("--set-tags can only be used with --tag");
+            }
+            if !has_alias && !has_clear_alias && tag_actions == 0 {
+                bail!("Provide metadata to update (alias or tags)");
             }
 
-            if let Some(rename) = args.rename.as_deref() {
+            let mut alias_updated = false;
+            let mut tags_updated = false;
+
+            if has_clear_alias {
+                store.items[idx].alias = None;
+                alias_updated = true;
+            } else if let Some(alias) = args.alias.as_deref() {
+                validate_alias(alias)?;
+                if store.items[idx].alias.as_deref() != Some(alias) {
+                    ensure_unique_alias(&store, alias)?;
+                    store.items[idx].alias = Some(alias.to_string());
+                    alias_updated = true;
+                }
+            }
+
+            if let Some(rename) = args.rename_tag.as_deref() {
                 let (old, new) = parse_rename(rename)?;
                 let tags = &mut store.items[idx].tags;
                 for tag in tags.iter_mut() {
@@ -611,59 +472,48 @@ fn main() -> Result<()> {
                 }
                 tags.sort();
                 tags.dedup();
-            } else if !args.rm.is_empty() {
-                let remove = normalize_tags(args.rm);
+                tags_updated = true;
+            } else if has_rm_tags {
+                let remove = normalize_tags(args.rm_tag);
                 store.items[idx]
                     .tags
                     .retain(|tag| !remove.iter().any(|rm| rm.eq_ignore_ascii_case(tag)));
-            } else {
-                let mut tags = normalize_tags(args.tags);
-                if args.set {
+                tags_updated = true;
+            } else if has_add_tags {
+                let mut tags = normalize_tags(args.tag);
+                if args.set_tags {
                     store.items[idx].tags = tags;
                 } else {
                     store.items[idx].tags.append(&mut tags);
                     store.items[idx].tags.sort();
                     store.items[idx].tags.dedup();
                 }
+                tags_updated = true;
             }
+
             save_store(&store_path, &store)?;
             let item = &store.items[idx];
-            let tags = if item.tags.is_empty() {
-                "-".to_string()
-            } else {
-                item.tags.join(",")
-            };
-            println!("Updated tags for {}: {tags}", item.id);
-        }
-        Command::Alias(args) => {
-            validate_alias(&args.alias)?;
-            ensure_unique_alias(&store, &args.alias)?;
-            let idx = resolve_target_index(&store, &args.target)?;
-            store.items[idx].alias = Some(args.alias);
-            save_store(&store_path, &store)?;
-            let item = &store.items[idx];
-            println!(
-                "Updated alias for {}: {}",
-                item.id,
-                item.alias.as_deref().unwrap_or("-")
-            );
-        }
-        Command::Tags(args) => {
-            list_tags(&store, args.format)?;
-        }
-        Command::Group(args) => {
-            apply_group(&mut store, args)?;
-            save_store(&store_path, &store)?;
-            println!("Group updated.");
-        }
-        Command::Groups(args) => {
-            list_groups(&store, args.format)?;
+            if alias_updated && tags_updated {
+                println!("Updated alias and tags for {}.", item.id);
+            } else if alias_updated {
+                println!(
+                    "Updated alias for {}: {}",
+                    item.id,
+                    item.alias.as_deref().unwrap_or("-")
+                );
+            } else if tags_updated {
+                let tags = if item.tags.is_empty() {
+                    "-".to_string()
+                } else {
+                    item.tags.join(",")
+                };
+                println!("Updated tags for {}: {tags}", item.id);
+            }
         }
         Command::Pick(args) => {
             let filters = Filters {
                 search: args.search.clone(),
                 tags: args.tag.clone(),
-                group: args.group.clone(),
             };
             let opts = ListOptions {
                 format: OutputFormat::Plain,
@@ -698,42 +548,39 @@ fn main() -> Result<()> {
                 println!("{output}");
             }
         }
-        Command::Export(args) => {
-            let has_file = args.file.is_some();
-            export_store(&store, args.file)?;
-            if has_file {
-                eprintln!("Exported {} favorites.", store.items.len());
+        Command::Io(args) => {
+            if args.export == args.import {
+                bail!("Choose exactly one of --export or --import");
             }
-        }
-        Command::Import(args) => {
-            let imported = import_store(args.file)?;
-            if args.merge {
-                merge_store(&mut store, imported)?;
+            if args.merge && !args.import {
+                bail!("--merge can only be used with --import");
+            }
+            if args.export {
+                let has_file = args.file.is_some();
+                export_store(&store, args.file)?;
+                if has_file {
+                    eprintln!("Exported {} favorites.", store.items.len());
+                }
             } else {
-                store = imported;
+                let imported = import_store(args.file)?;
+                if args.merge {
+                    merge_store(&mut store, imported)?;
+                } else {
+                    store = imported;
+                }
+                sync_store(&mut store);
+                save_store(&store_path, &store)?;
+                eprintln!("Imported {} favorites.", store.items.len());
             }
-            sync_store(&mut store);
-            save_store(&store_path, &store)?;
-            eprintln!("Imported {} favorites.", store.items.len());
         }
-        Command::Backup(_args) => {
-            let backup_path = backup_store(&store, &store_path)?;
-            println!("{}", backup_path.display());
-        }
-        Command::Restore(args) => {
-            let imported = import_store(Some(args.file))?;
-            store = imported;
-            sync_store(&mut store);
-            save_store(&store_path, &store)?;
-            eprintln!("Restored {} favorites.", store.items.len());
-        }
-        Command::Check(args) => {
-            check_missing(&store, args.path_format)?;
-        }
-        Command::Prune(_args) => {
-            let removed = prune_missing(&mut store)?;
-            save_store(&store_path, &store)?;
-            println!("{removed}");
+        Command::Health(args) => {
+            if args.prune {
+                let removed = prune_missing(&mut store)?;
+                save_store(&store_path, &store)?;
+                println!("{removed}");
+            } else {
+                check_missing(&store, args.path_format)?;
+            }
         }
         Command::With(args) => {
             let idx = resolve_target_index(&store, &args.target)?;
@@ -753,7 +600,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn try_handle_alias_or_dial(args: &[String]) -> Result<Option<String>> {
+fn try_handle_alias_or_get(args: &[String]) -> Result<Option<String>> {
     if args.len() < 2 {
         return Ok(None);
     }
@@ -821,21 +668,12 @@ fn is_reserved_word(value: &str) -> bool {
         value,
         "add"
             | "list"
-            | "search"
-            | "dial"
-            | "tag"
-            | "alias"
-            | "tags"
-            | "group"
-            | "groups"
+            | "get"
+            | "meta"
+            | "io"
+            | "health"
             | "pick"
             | "tui"
-            | "export"
-            | "import"
-            | "backup"
-            | "restore"
-            | "check"
-            | "prune"
             | "with"
             | "rm"
             | "remove"
@@ -857,7 +695,6 @@ fn load_store(store_path: &Path) -> Result<Store> {
                 path: seed_path,
                 alias: None,
                 tags: Vec::new(),
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -906,7 +743,6 @@ fn sync_store(store: &mut Store) {
 struct Filters {
     search: Option<String>,
     tags: Vec<String>,
-    group: Option<String>,
 }
 
 struct ListOptions {
@@ -920,7 +756,6 @@ struct ListOptions {
 struct OutputItem {
     id: u64,
     alias: Option<String>,
-    group: Option<String>,
     path: String,
     tags: Vec<String>,
     uses: u64,
@@ -936,30 +771,25 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
         OutputFormat::Table => {
             for item in &items {
                 let alias = item.alias.as_deref().unwrap_or("-");
-                let group = item.group.as_deref().unwrap_or("-");
                 let tags = if item.tags.is_empty() {
                     "-".to_string()
                 } else {
                     item.tags.join(",")
                 };
                 let path = format_path(item.path.as_str(), opts.path_format)?;
-                println!(
-                    "{:>4}  {:<20}  {:<14}  {:<40}  {}",
-                    item.id, alias, group, path, tags
-                );
+                println!("{:>4}  {:<20}  {:<54}  {}", item.id, alias, path, tags);
             }
         }
         OutputFormat::Plain => {
             for item in &items {
                 let alias = item.alias.as_deref().unwrap_or("-");
-                let group = item.group.as_deref().unwrap_or("-");
                 let tags = if item.tags.is_empty() {
                     "-".to_string()
                 } else {
                     item.tags.join(",")
                 };
                 let path = format_path(item.path.as_str(), opts.path_format)?;
-                println!("{}\t{}\t{}\t{}\t{}", item.id, alias, group, path, tags);
+                println!("{}\t{}\t{}\t{}", item.id, alias, path, tags);
             }
         }
         OutputFormat::Json => {
@@ -968,7 +798,6 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
                 .map(|item| OutputItem {
                     id: item.id,
                     alias: item.alias.clone(),
-                    group: item.group.clone(),
                     path: format_path(item.path.as_str(), opts.path_format)
                         .unwrap_or_else(|_| item.path.clone()),
                     tags: item.tags.clone(),
@@ -998,15 +827,6 @@ fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> 
                     return false;
                 }
             }
-            if let Some(group) = filters.group.as_deref()
-                && item
-                    .group
-                    .as_deref()
-                    .map(|g| !g.eq_ignore_ascii_case(group))
-                    .unwrap_or(true)
-            {
-                return false;
-            }
             if let Some(q) = query.as_ref()
                 && !matches_query(item, q)
             {
@@ -1026,10 +846,6 @@ fn matches_query(item: &Favorite, query: &str) -> bool {
             .tags
             .iter()
             .any(|tag| tag.to_lowercase().contains(query))
-        || item
-            .group
-            .as_ref()
-            .is_some_and(|group| group.to_lowercase().contains(query))
 }
 
 fn sort_items(items: &mut Vec<&Favorite>, sort: SortBy, reverse: bool) {
@@ -1038,7 +854,6 @@ fn sort_items(items: &mut Vec<&Favorite>, sort: SortBy, reverse: bool) {
         SortBy::Alias => items.sort_by_key(|item| item.alias.clone().unwrap_or_default()),
         SortBy::Path => items.sort_by_key(|item| item.path.clone()),
         SortBy::Tag => items.sort_by_key(|item| item.tags.first().cloned().unwrap_or_default()),
-        SortBy::Group => items.sort_by_key(|item| item.group.clone().unwrap_or_default()),
         SortBy::Recent => items.sort_by_key(|item| item.last_used.unwrap_or(0)),
         SortBy::Uses => items.sort_by_key(|item| item.uses),
     }
@@ -1070,85 +885,6 @@ fn parse_rename(value: &str) -> Result<(&str, &str)> {
     Ok((old, new))
 }
 
-fn list_tags(store: &Store, format: TagListFormat) -> Result<()> {
-    let mut counts: Vec<(String, u64)> = Vec::new();
-    for item in store.items.iter() {
-        for tag in item.tags.iter() {
-            if let Some(existing) = counts
-                .iter_mut()
-                .find(|(existing_tag, _)| existing_tag.eq_ignore_ascii_case(tag))
-            {
-                existing.1 += 1;
-            } else {
-                counts.push((tag.to_string(), 1));
-            }
-        }
-    }
-    counts.sort_by_key(|(tag, _)| tag.to_lowercase());
-
-    match format {
-        TagListFormat::Plain => {
-            for (tag, count) in counts {
-                println!("{tag}\t{count}");
-            }
-        }
-        TagListFormat::Json => {
-            let data = serde_json::to_vec(&counts).context("serialize tags")?;
-            io::stdout().write_all(&data).context("write tags")?;
-        }
-    }
-    Ok(())
-}
-
-fn list_groups(store: &Store, format: TagListFormat) -> Result<()> {
-    let mut counts: Vec<(String, u64)> = Vec::new();
-    for item in store.items.iter() {
-        if let Some(group) = item.group.as_ref() {
-            if let Some(existing) = counts
-                .iter_mut()
-                .find(|(existing_group, _)| existing_group.eq_ignore_ascii_case(group))
-            {
-                existing.1 += 1;
-            } else {
-                counts.push((group.to_string(), 1));
-            }
-        }
-    }
-    counts.sort_by_key(|(group, _)| group.to_lowercase());
-
-    match format {
-        TagListFormat::Plain => {
-            for (group, count) in counts {
-                println!("{group}\t{count}");
-            }
-        }
-        TagListFormat::Json => {
-            let data = serde_json::to_vec(&counts).context("serialize groups")?;
-            io::stdout().write_all(&data).context("write groups")?;
-        }
-    }
-    Ok(())
-}
-
-fn apply_group(store: &mut Store, args: GroupArgs) -> Result<()> {
-    if args.clear {
-        let target = args
-            .target
-            .as_deref()
-            .or(args.group.as_deref())
-            .context("Provide a target to clear")?;
-        let idx = resolve_target_index(store, target)?;
-        store.items[idx].group = None;
-        return Ok(());
-    }
-
-    let group = args.group.as_deref().context("Provide a group")?;
-    let target = args.target.as_deref().context("Provide a target")?;
-    let idx = resolve_target_index(store, target)?;
-    store.items[idx].group = Some(group.to_string());
-    Ok(())
-}
-
 #[cfg(not(feature = "coverage"))]
 fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Option<u64>> {
     let mut items = filtered_items(store, filters);
@@ -1167,19 +903,14 @@ fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Opt
         let stdin = child.stdin.as_mut().context("open fzf stdin")?;
         for item in items.iter() {
             let alias = item.alias.as_deref().unwrap_or("-");
-            let group = item.group.as_deref().unwrap_or("-");
             let tags = if item.tags.is_empty() {
                 "-".to_string()
             } else {
                 item.tags.join(",")
             };
             let path = format_path(item.path.as_str(), opts.path_format)?;
-            writeln!(
-                stdin,
-                "{}\t{}\t{}\t{}\t{}",
-                item.id, alias, group, path, tags
-            )
-            .context("write to fzf")?;
+            writeln!(stdin, "{}\t{}\t{}\t{}", item.id, alias, path, tags)
+                .context("write to fzf")?;
         }
     }
 
@@ -1221,7 +952,6 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let base_filters = Filters {
         search: args.search.clone(),
         tags: args.tag.clone(),
-        group: args.group.clone(),
     };
     let list_opts = ListOptions {
         format: OutputFormat::Plain,
@@ -1271,7 +1001,6 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
             } else {
                 args.tag.join(",")
             };
-            let group = args.group.as_deref().unwrap_or("-");
             let header = Paragraph::new(Line::from(vec![
                 Span::styled("Filter: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(&filter),
@@ -1279,9 +1008,7 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                 Span::styled("base:", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(format!(" {base_search}  ")),
                 Span::styled("tag:", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!(" {tags}  ")),
-                Span::styled("group:", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!(" {group}")),
+                Span::raw(format!(" {tags}")),
             ]))
             .block(Block::default().borders(Borders::ALL).title("fav tui"));
             frame.render_widget(header, sections[0]);
@@ -1290,7 +1017,6 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                 .iter()
                 .map(|item| {
                     let alias = item.alias.as_deref().unwrap_or("-");
-                    let group = item.group.as_deref().unwrap_or("-");
                     let tags = if item.tags.is_empty() {
                         "-".to_string()
                     } else {
@@ -1298,10 +1024,8 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                     };
                     let path = format_path(item.path.as_str(), args.display_path_format)
                         .unwrap_or_else(|_| item.path.clone());
-                    let line = Line::from(format!(
-                        "{:>4}  {:<20}  {:<12}  {}  {}",
-                        item.id, alias, group, path, tags
-                    ));
+                    let line =
+                        Line::from(format!("{:>4}  {:<20}  {}  {}", item.id, alias, path, tags));
                     ListItem::new(line)
                 })
                 .collect();
@@ -1374,7 +1098,6 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let filters = Filters {
         search: args.search.clone(),
         tags: args.tag.clone(),
-        group: args.group.clone(),
     };
     let opts = ListOptions {
         format: OutputFormat::Plain,
@@ -1447,15 +1170,6 @@ fn merge_store(existing: &mut Store, mut imported: Store) -> Result<()> {
     Ok(())
 }
 
-fn backup_store(store: &Store, store_path: &Path) -> Result<PathBuf> {
-    let base = store_path;
-    let timestamp = now_timestamp();
-    let backup_path = PathBuf::from(format!("{}.backup-{timestamp}", base.display()));
-    let data = serde_json::to_vec_pretty(store).context("serialize store")?;
-    fs::write(&backup_path, data).context("write backup")?;
-    Ok(backup_path)
-}
-
 fn check_missing(store: &Store, format: PathFormat) -> Result<()> {
     for item in store.items.iter() {
         if !Path::new(item.path.as_str()).exists() {
@@ -1517,7 +1231,6 @@ mod tests {
                     path: "/tmp/alpha".to_string(),
                     alias: Some("alpha".to_string()),
                     tags: vec!["work".to_string(), "notes".to_string()],
-                    group: Some("proj".to_string()),
                     uses: 2,
                     last_used: Some(100),
                 },
@@ -1526,7 +1239,6 @@ mod tests {
                     path: "/var/log/syslog".to_string(),
                     alias: None,
                     tags: vec!["ops".to_string()],
-                    group: None,
                     uses: 5,
                     last_used: Some(200),
                 },
@@ -1535,7 +1247,6 @@ mod tests {
                     path: "/home/user/docs".to_string(),
                     alias: Some("docs".to_string()),
                     tags: vec!["work".to_string()],
-                    group: Some("docs".to_string()),
                     uses: 1,
                     last_used: Some(50),
                 },
@@ -1549,24 +1260,10 @@ mod tests {
         let filters = Filters {
             search: None,
             tags: vec!["work".to_string()],
-            group: None,
         };
         let items = filtered_items(&store, &filters);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![1, 3]);
-    }
-
-    #[test]
-    fn filters_by_group() {
-        let store = sample_store();
-        let filters = Filters {
-            search: None,
-            tags: Vec::new(),
-            group: Some("proj".to_string()),
-        };
-        let items = filtered_items(&store, &filters);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, 1);
     }
 
     #[test]
@@ -1575,7 +1272,6 @@ mod tests {
         let filters = Filters {
             search: Some("sys".to_string()),
             tags: Vec::new(),
-            group: None,
         };
         let items = filtered_items(&store, &filters);
         assert_eq!(items.len(), 1);
@@ -1629,7 +1325,6 @@ mod tests {
                 path: "/tmp/x".to_string(),
                 alias: None,
                 tags: Vec::new(),
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -1650,7 +1345,6 @@ mod tests {
                 path: "/tmp/other".to_string(),
                 alias: Some("unique".to_string()),
                 tags: vec!["x".to_string()],
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -1671,7 +1365,6 @@ mod tests {
                 path: "/tmp/other".to_string(),
                 alias: Some("alpha".to_string()),
                 tags: vec!["x".to_string()],
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -1780,7 +1473,6 @@ mod tests {
                 path: canonical.to_string_lossy().to_string(),
                 alias: Some("alpha".to_string()),
                 tags: Vec::new(),
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -1809,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_by_path_tag_group_and_uses() {
+    fn sort_by_path_tag_and_uses() {
         let store = sample_store();
 
         let mut by_path: Vec<&Favorite> = store.items.iter().collect();
@@ -1821,11 +1513,6 @@ mod tests {
         sort_items(&mut by_tag, SortBy::Tag, false);
         assert_eq!(by_tag.first().unwrap().id, 2);
 
-        let mut by_group: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut by_group, SortBy::Group, false);
-        let group_ids: Vec<u64> = by_group.iter().map(|item| item.id).collect();
-        assert_eq!(group_ids, vec![2, 3, 1]);
-
         let mut by_uses: Vec<&Favorite> = store.items.iter().collect();
         sort_items(&mut by_uses, SortBy::Uses, false);
         let uses_ids: Vec<u64> = by_uses.iter().map(|item| item.id).collect();
@@ -1833,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn try_handle_alias_or_dial_parsing() {
+    fn try_handle_alias_or_get_parsing() {
         let dir = tempdir().expect("tempdir");
         let config = dir.path().join("fav.json");
         let store = Store {
@@ -1844,7 +1531,6 @@ mod tests {
                 path: "/tmp/fav-alpha".to_string(),
                 alias: Some("alpha".to_string()),
                 tags: Vec::new(),
-                group: None,
                 uses: 0,
                 last_used: None,
             }],
@@ -1852,10 +1538,10 @@ mod tests {
         save_store(&config, &store).expect("save");
 
         let args = vec!["fav".to_string()];
-        assert!(try_handle_alias_or_dial(&args).expect("empty").is_none());
+        assert!(try_handle_alias_or_get(&args).expect("empty").is_none());
 
         let args = vec!["fav".to_string(), "--help".to_string()];
-        assert!(try_handle_alias_or_dial(&args).expect("help").is_none());
+        assert!(try_handle_alias_or_get(&args).expect("help").is_none());
 
         let args = vec![
             "fav".to_string(),
@@ -1863,7 +1549,7 @@ mod tests {
             config.display().to_string(),
             "alpha".to_string(),
         ];
-        let output = try_handle_alias_or_dial(&args).expect("alias");
+        let output = try_handle_alias_or_get(&args).expect("alias");
         assert_eq!(output, Some("/tmp/fav-alpha".to_string()));
 
         let args = vec![
@@ -1871,11 +1557,11 @@ mod tests {
             format!("--config={}", config.display()),
             "1".to_string(),
         ];
-        let output = try_handle_alias_or_dial(&args).expect("id");
+        let output = try_handle_alias_or_get(&args).expect("id");
         assert_eq!(output, Some("/tmp/fav-alpha".to_string()));
 
         let args = vec!["fav".to_string(), "alpha".to_string(), "extra".to_string()];
-        assert!(try_handle_alias_or_dial(&args).expect("extra").is_none());
+        assert!(try_handle_alias_or_get(&args).expect("extra").is_none());
     }
 }
 

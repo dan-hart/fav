@@ -5,9 +5,9 @@ Speed-dial for files and folders.
 Remember paths once, then use them everywhere.
 
 - Instant path recall by id or alias
-- Tags + groups for organization
+- Tags for organization
 - `fav with` runs commands with a favorite path (no subshells)
-- Search, pick (fzf), export/import, backup/restore
+- Search, pick (fzf), and import/export
 - Works on macOS and Linux
 
 ## Install
@@ -53,11 +53,11 @@ fav with todo -- cat
 ```bash
 # speed-dial by id
 fav 3
-fav dial 3
+fav get 3
 
 # search + filter
-fav search notes
-fav list --tag work --group project
+fav list --search notes
+fav list --tag work
 
 # interactive pick (requires fzf)
 fav pick --tag work
@@ -65,9 +65,9 @@ fav pick --tag work
 # built-in TUI
 fav tui --tag work
 
-# export/backup
-fav export > backup.json
-fav backup
+# export/import
+fav io --export > backup.json
+fav io --import --file backup.json
 ```
 
 ## Config

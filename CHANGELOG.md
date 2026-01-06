@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-01-06
+### Added
+- `get`, `meta`, `io`, and `health` commands for a simpler CLI
+### Changed
+- Consolidated metadata commands into `meta`
+- Collapsed import/export/backup/restore into `io`
+- Replaced check/prune with `health`
+- Removed groups from outputs, sorting, and the data format
+
 ## [0.1.3] - 2026-01-06
 ### Added
 - `--display-path-format` for `pick` and `tui` to control UI path rendering

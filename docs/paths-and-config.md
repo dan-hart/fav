@@ -33,14 +33,14 @@ Some commands support `--path-format`:
 
 Defaults:
 
-- Display commands (`list`, `search`, `check`) render paths as `relative` by default.
-- Path-only output (`dial`, `fav <id>`, `fav <alias>`, `pick`, `tui`) uses `absolute` by default.
+- Display commands (`list`, `health`) render paths as `relative` by default.
+- Path-only output (`get`, `fav <id>`, `fav <alias>`, `pick`, `tui`) uses `absolute` by default.
 - `pick` and `tui` also accept `--display-path-format` to control the UI list paths separately.
 
 ## Output formats
 
-`list` and `search` support:
+`list` supports:
 
 - `table` (default) - aligned columns
-- `plain` - tab-separated fields (id, alias, group, path, tags)
+- `plain` - tab-separated fields (id, alias, path, tags)
 - `json` - machine-readable output

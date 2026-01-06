@@ -28,7 +28,7 @@ fav add ~/dotfiles --alias dotfiles --tag config --tag work
 ```
 fav
 fav list --tag work
-fav search notes
+fav list --search notes
 ```
 
 ## Print a path (for use in other commands)
@@ -36,10 +36,11 @@ fav search notes
 ```
 # speed-dial id
 fav 3
-fav dial 3
+fav get 3
 
 # alias
 fav dotfiles
+fav get dotfiles
 ```
 
 ## Run another command with a favorite
