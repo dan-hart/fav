@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-01-06
+### Added
+- `--display-path-format` for `pick` and `tui` to control UI path rendering
+### Changed
+- Default path-only output now uses absolute paths
+- Default display output now uses relative paths
+
 ## [0.1.2] - 2026-01-06
 ### Added
 - Package metadata for public distribution

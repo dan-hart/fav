@@ -104,6 +104,7 @@ Interactive selection using `fzf` (path-only output).
 ```
 fav pick [--tag <tag>...] [--group <name>] [--search <query>]
          [--path-format tilde|absolute|relative]
+         [--display-path-format tilde|absolute|relative]
          [--sort id|alias|path|tag|group|recent|uses]
          [--reverse]
 ```
@@ -115,6 +116,7 @@ Interactive terminal UI (path-only output).
 ```
 fav tui [--tag <tag>...] [--group <name>] [--search <query>]
         [--path-format tilde|absolute|relative]
+        [--display-path-format tilde|absolute|relative]
         [--sort id|alias|path|tag|group|recent|uses]
         [--reverse]
 ```

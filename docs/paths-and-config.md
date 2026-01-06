@@ -31,6 +31,12 @@ Some commands support `--path-format`:
 - `absolute` - full absolute path
 - `relative` - relative to the current working directory when possible
 
+Defaults:
+
+- Display commands (`list`, `search`, `check`) render paths as `relative` by default.
+- Path-only output (`dial`, `fav <id>`, `fav <alias>`, `pick`, `tui`) uses `absolute` by default.
+- `pick` and `tui` also accept `--display-path-format` to control the UI list paths separately.
+
 ## Output formats
 
 `list` and `search` support:

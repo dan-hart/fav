@@ -211,7 +211,7 @@ struct ListArgs {
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
     /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    #[arg(long, value_enum, default_value = "relative")]
     path_format: PathFormat,
     /// Sort by field
     #[arg(long, value_enum, default_value = "id")]
@@ -235,7 +235,7 @@ struct SearchArgs {
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
     /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    #[arg(long, value_enum, default_value = "relative")]
     path_format: PathFormat,
     /// Sort by field
     #[arg(long, value_enum, default_value = "id")]
@@ -250,7 +250,7 @@ struct DialArgs {
     /// Speed-dial number (shown in `fav list`)
     id: u64,
     /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
 }
 
@@ -316,9 +316,12 @@ struct PickArgs {
     /// Search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
-    /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    /// How to render output paths
+    #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
+    /// How to render paths in the picker display
+    #[arg(long, value_enum, default_value = "relative")]
+    display_path_format: PathFormat,
     /// Sort by field
     #[arg(long, value_enum, default_value = "id")]
     sort: SortBy,
@@ -338,9 +341,12 @@ struct TuiArgs {
     /// Initial search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
-    /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    /// How to render output paths
+    #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
+    /// How to render paths in the TUI display
+    #[arg(long, value_enum, default_value = "relative")]
+    display_path_format: PathFormat,
     /// Sort by field
     #[arg(long, value_enum, default_value = "id")]
     sort: SortBy,
@@ -378,7 +384,7 @@ struct RestoreArgs {
 #[derive(Args)]
 struct CheckArgs {
     /// How to render paths
-    #[arg(long, value_enum, default_value = "tilde")]
+    #[arg(long, value_enum, default_value = "relative")]
     path_format: PathFormat,
 }
 
@@ -472,7 +478,7 @@ fn main() -> Result<()> {
         group: None,
         search: None,
         format: OutputFormat::Table,
-        path_format: PathFormat::Tilde,
+        path_format: PathFormat::Relative,
         sort: SortBy::Id,
         reverse: false,
     })) {
@@ -531,7 +537,7 @@ fn main() -> Result<()> {
                 };
                 println!(
                     "Added favorite {id}: {} (alias: {alias}, tags: {tags})",
-                    format_path(item.path.as_str(), PathFormat::Tilde)?
+                    format_path(item.path.as_str(), PathFormat::Relative)?
                 );
             }
         }
@@ -661,7 +667,7 @@ fn main() -> Result<()> {
             };
             let opts = ListOptions {
                 format: OutputFormat::Plain,
-                path_format: args.path_format,
+                path_format: args.display_path_format,
                 sort: args.sort,
                 reverse: args.reverse,
             };
@@ -794,7 +800,7 @@ fn try_handle_alias_or_dial(args: &[String]) -> Result<Option<String>> {
             .position(|item| item.id == id)
             .context("No favorite with that id")?;
         mark_used(&mut store.items[idx]);
-        let output = format_path(store.items[idx].path.as_str(), PathFormat::Tilde)?;
+        let output = format_path(store.items[idx].path.as_str(), PathFormat::Absolute)?;
         save_store(&store_path, &store)?;
         return Ok(Some(output));
     }
@@ -805,7 +811,7 @@ fn try_handle_alias_or_dial(args: &[String]) -> Result<Option<String>> {
         .position(|item| item.alias.as_deref() == Some(first))
         .context("No favorite with that alias")?;
     mark_used(&mut store.items[idx]);
-    let output = format_path(store.items[idx].path.as_str(), PathFormat::Tilde)?;
+    let output = format_path(store.items[idx].path.as_str(), PathFormat::Absolute)?;
     save_store(&store_path, &store)?;
     Ok(Some(output))
 }
@@ -1219,7 +1225,7 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     };
     let list_opts = ListOptions {
         format: OutputFormat::Plain,
-        path_format: args.path_format,
+        path_format: args.display_path_format,
         sort: args.sort,
         reverse: args.reverse,
     };
@@ -1290,7 +1296,7 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                     } else {
                         item.tags.join(",")
                     };
-                    let path = format_path(item.path.as_str(), args.path_format)
+                    let path = format_path(item.path.as_str(), args.display_path_format)
                         .unwrap_or_else(|_| item.path.clone());
                     let line = Line::from(format!(
                         "{:>4}  {:<20}  {:<12}  {}  {}",
@@ -1372,7 +1378,7 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     };
     let opts = ListOptions {
         format: OutputFormat::Plain,
-        path_format: args.path_format,
+        path_format: args.display_path_format,
         sort: args.sort,
         reverse: args.reverse,
     };
