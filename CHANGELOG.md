@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-01-06
+### Added
+- Package metadata for public distribution
+### Changed
+- Tightened git-secrets allowlist
+- Formatting-only refactors to satisfy clippy/fmt
+
 ## [0.1.1] - 2026-01-06
 ### Added
 - Expanded unit and CLI integration tests

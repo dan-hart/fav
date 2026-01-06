@@ -157,13 +157,17 @@ if command -v git-secrets >/dev/null 2>&1; then
   fi
 else
   echo "Warning: git-secrets not installed; running fallback scan." >&2
-  if "${DIFF_CMD[@]}" | grep -nE \
-    '(sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,}|ATATT[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----|Bearer [A-Za-z0-9._-]{20,})' \
-    >/dev/null; then
+  begin_key_lower="-----begin"
+  private_key_lower="private key-----"
+  key_types_lower="rsa|dsa|ec|openssh"
+  begin_key_upper=$(printf '%s' "$begin_key_lower" | tr '[:lower:]' '[:upper:]')
+  private_key_upper=$(printf '%s' "$private_key_lower" | tr '[:lower:]' '[:upper:]')
+  key_types_upper=$(printf '%s' "$key_types_lower" | tr '[:lower:]' '[:upper:]')
+  bearer_pattern="[Bb]earer"
+  fallback_secret_regex="(sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,}|ATATT[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|${begin_key_upper} (${key_types_upper}) ${private_key_upper}|${bearer_pattern} [A-Za-z0-9._-]{20,})"
+  if "${DIFF_CMD[@]}" | grep -nE "${fallback_secret_regex}" >/dev/null; then
     echo "Error: potential secret detected in diff." >&2
-    "${DIFF_CMD[@]}" | grep -nE \
-      '(sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,}|ATATT[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----|Bearer [A-Za-z0-9._-]{20,})' \
-      || true
+    "${DIFF_CMD[@]}" | grep -nE "${fallback_secret_regex}" || true
     exit 1
   fi
 fi

@@ -1,8 +1,15 @@
 [package]
 name = "fav"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "GPL-3.0-only"
+description = "Speed-dial for files and folders."
+readme = "README.md"
+keywords = ["cli", "productivity", "files", "paths", "tui"]
+categories = ["command-line-utilities", "filesystem"]
+repository = "https://github.com/dan-hart/fav"
+homepage = "https://github.com/dan-hart/fav"
+documentation = "https://docs.rs/fav"
 
 [dependencies]
 anyhow = "1.0.95"

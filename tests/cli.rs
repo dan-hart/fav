@@ -20,7 +20,11 @@ fn run_fav(args: &[&str], config: &Path) -> assert_cmd::assert::Assert {
 
 fn output_fav(args: &[&str], config: &Path) -> String {
     let mut cmd = cargo_bin_cmd!("fav");
-    let output = cmd.env("FAV_CONFIG", config).args(args).output().expect("run");
+    let output = cmd
+        .env("FAV_CONFIG", config)
+        .args(args)
+        .output()
+        .expect("run");
     assert!(output.status.success(), "command failed: {args:?}");
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
@@ -75,12 +79,13 @@ fn add_list_alias_group_tag_flow() {
     let item = find_by_id(&items, 2);
     assert_eq!(item.get("alias").and_then(|v| v.as_str()), Some("myfile"));
     assert_eq!(item.get("group").and_then(|v| v.as_str()), Some("proj"));
-    assert!(item
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .unwrap()
-        .iter()
-        .any(|tag| tag == "work"));
+    assert!(
+        item.get("tags")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .any(|tag| tag == "work")
+    );
 
     let resolved = output_fav(&["myfile"], &config);
     let canonical = file_path.canonicalize().expect("canonical");
@@ -103,7 +108,10 @@ fn search_and_dial() {
     let item = find_by_id(&items, id);
     assert_eq!(item.get("id").and_then(|v| v.as_u64()), Some(id));
 
-    let dialed = output_fav(&["dial", &id.to_string(), "--path-format", "absolute"], &config);
+    let dialed = output_fav(
+        &["dial", &id.to_string(), "--path-format", "absolute"],
+        &config,
+    );
     assert_eq!(dialed, file_path.canonicalize().unwrap().to_string_lossy());
 }
 
@@ -117,10 +125,18 @@ fn export_import_restore() {
     output_fav(&["add", file_path.to_str().unwrap(), "--id-only"], &config);
 
     let export_file = data_dir.path().join("export.json");
-    run_fav(&["export", "--file", export_file.to_str().unwrap()], &config).success();
+    run_fav(
+        &["export", "--file", export_file.to_str().unwrap()],
+        &config,
+    )
+    .success();
 
     let (_dir2, config2) = temp_config();
-    run_fav(&["import", "--file", export_file.to_str().unwrap()], &config2).success();
+    run_fav(
+        &["import", "--file", export_file.to_str().unwrap()],
+        &config2,
+    )
+    .success();
 
     let items = list_json(&config2);
     assert!(items.len() >= 2);
@@ -157,14 +173,7 @@ fn with_command_inserts_path() {
         .expect("id");
 
     let output = output_fav(
-        &[
-            "with",
-            &id.to_string(),
-            "--",
-            "printf",
-            "%s",
-            "{}",
-        ],
+        &["with", &id.to_string(), "--", "printf", "%s", "{}"],
         &config,
     );
     assert_eq!(output, file_path.canonicalize().unwrap().to_string_lossy());
@@ -197,16 +206,14 @@ fn list_tags_groups_formats() {
     assert!(tags_plain.contains("work"));
 
     let tags_json = output_fav(&["tags", "--format", "json"], &config);
-    let tags_value: Vec<(String, u64)> =
-        serde_json::from_str(&tags_json).expect("tags json");
+    let tags_value: Vec<(String, u64)> = serde_json::from_str(&tags_json).expect("tags json");
     assert!(tags_value.iter().any(|(tag, _)| tag == "work"));
 
     let groups_plain = output_fav(&["groups"], &config);
     assert!(groups_plain.contains("proj"));
 
     let groups_json = output_fav(&["groups", "--format", "json"], &config);
-    let groups_value: Vec<(String, u64)> =
-        serde_json::from_str(&groups_json).expect("groups json");
+    let groups_value: Vec<(String, u64)> = serde_json::from_str(&groups_json).expect("groups json");
     assert!(groups_value.iter().any(|(group, _)| group == "proj"));
 }
 
@@ -221,29 +228,32 @@ fn tag_and_group_mutations() {
 
     run_fav(&["tag", &id.to_string(), "--rename", "work=ops"], &config).success();
     let item = find_by_id(&list_json(&config), id);
-    assert!(item
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .unwrap()
-        .iter()
-        .any(|tag| tag == "ops"));
+    assert!(
+        item.get("tags")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .any(|tag| tag == "ops")
+    );
 
     run_fav(&["tag", &id.to_string(), "--rm", "ops"], &config).success();
     let item = find_by_id(&list_json(&config), id);
-    assert!(item
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .unwrap()
-        .is_empty());
+    assert!(
+        item.get("tags")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .is_empty()
+    );
 
     run_fav(&["tag", &id.to_string(), "new", "--set"], &config).success();
     let item = find_by_id(&list_json(&config), id);
-    assert!(item
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .unwrap()
-        .iter()
-        .any(|tag| tag == "new"));
+    assert!(
+        item.get("tags")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .any(|tag| tag == "new")
+    );
 
     run_fav(&["group", "proj", &id.to_string()], &config).success();
     run_fav(&["group", "--clear", &id.to_string()], &config).success();
@@ -268,9 +278,11 @@ fn errors_and_remove() {
 
     run_fav(&["rm", &id.to_string()], &config).success();
     let items = list_json(&config);
-    assert!(!items
-        .iter()
-        .any(|item| item.get("id").and_then(|v| v.as_u64()) == Some(id)));
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.get("id").and_then(|v| v.as_u64()) == Some(id))
+    );
 }
 
 #[test]
@@ -287,12 +299,14 @@ fn export_import_merge_backup_restore_and_with_append() {
 
     let export_stdout = output_fav(&["export"], &config);
     let export_value: Value = serde_json::from_str(&export_stdout).expect("export json");
-    assert!(export_value
-        .get("items")
-        .and_then(|v| v.as_array())
-        .unwrap()
-        .len()
-        >= 3);
+    assert!(
+        export_value
+            .get("items")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .len()
+            >= 3
+    );
 
     let export_file = data_dir.path().join("export.json");
     run_fav(
@@ -323,16 +337,13 @@ fn export_import_merge_backup_restore_and_with_append() {
     assert!(restored.len() >= merged.len());
 
     let with_append = output_fav(
-        &[
-            "with",
-            &id_one.to_string(),
-            "--",
-            "printf",
-            "%s",
-        ],
+        &["with", &id_one.to_string(), "--", "printf", "%s"],
         &config,
     );
-    assert_eq!(with_append, file_one.canonicalize().unwrap().to_string_lossy());
+    assert_eq!(
+        with_append,
+        file_one.canonicalize().unwrap().to_string_lossy()
+    );
 }
 
 #[test]
@@ -403,7 +414,10 @@ fn pick_and_tui_no_output_under_coverage() {
     add_with_alias(&config, &file_path, "picked", "work");
 
     let pick_out = output_fav(&["pick", "--tag", "work"], &config);
-    assert_eq!(pick_out, file_path.canonicalize().unwrap().to_string_lossy());
+    assert_eq!(
+        pick_out,
+        file_path.canonicalize().unwrap().to_string_lossy()
+    );
 
     let tui_out = output_fav(&["tui", "--tag", "work"], &config);
     assert_eq!(tui_out, file_path.canonicalize().unwrap().to_string_lossy());

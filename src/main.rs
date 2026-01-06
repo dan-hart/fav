@@ -5,28 +5,28 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 #[cfg(not(feature = "coverage"))]
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(feature = "coverage"))]
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(not(feature = "coverage"))]
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use directories::UserDirs;
 #[cfg(not(feature = "coverage"))]
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
 };
 use serde::{Deserialize, Serialize};
 
@@ -673,8 +673,7 @@ fn main() -> Result<()> {
                     .position(|item| item.id == id)
                     .context("No favorite with that id")?;
                 mark_used(&mut store.items[idx]);
-                let output =
-                    format_path(store.items[idx].path.as_str(), args.path_format)?;
+                let output = format_path(store.items[idx].path.as_str(), args.path_format)?;
                 save_store(&store_path, &store)?;
                 println!("{output}");
             }
@@ -688,8 +687,7 @@ fn main() -> Result<()> {
                     .position(|item| item.id == id)
                     .context("No favorite with that id")?;
                 mark_used(&mut store.items[idx]);
-                let output =
-                    format_path(store.items[idx].path.as_str(), args.path_format)?;
+                let output = format_path(store.items[idx].path.as_str(), args.path_format)?;
                 save_store(&store_path, &store)?;
                 println!("{output}");
             }
@@ -763,9 +761,7 @@ fn try_handle_alias_or_dial(args: &[String]) -> Result<Option<String>> {
             continue;
         }
         if arg == "--config" {
-            let next = args
-                .get(index + 1)
-                .context("Missing value for --config")?;
+            let next = args.get(index + 1).context("Missing value for --config")?;
             override_config = Some(PathBuf::from(next));
             skip_next = true;
             continue;
@@ -988,29 +984,27 @@ fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> 
         .iter()
         .filter(|item| {
             if !filters.tags.is_empty() {
-                let has_all = filters.tags.iter().all(|tag| {
-                    item.tags
-                        .iter()
-                        .any(|t| t.eq_ignore_ascii_case(tag))
-                });
+                let has_all = filters
+                    .tags
+                    .iter()
+                    .all(|tag| item.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)));
                 if !has_all {
                     return false;
                 }
             }
-            if let Some(group) = filters.group.as_deref() {
-                if item
+            if let Some(group) = filters.group.as_deref()
+                && item
                     .group
                     .as_deref()
                     .map(|g| !g.eq_ignore_ascii_case(group))
                     .unwrap_or(true)
-                {
-                    return false;
-                }
+            {
+                return false;
             }
-            if let Some(q) = query.as_ref() {
-                if !matches_query(item, q) {
-                    return false;
-                }
+            if let Some(q) = query.as_ref()
+                && !matches_query(item, q)
+            {
+                return false;
             }
             true
         })
@@ -1037,13 +1031,12 @@ fn sort_items(items: &mut Vec<&Favorite>, sort: SortBy, reverse: bool) {
         SortBy::Id => items.sort_by_key(|item| item.id),
         SortBy::Alias => items.sort_by_key(|item| item.alias.clone().unwrap_or_default()),
         SortBy::Path => items.sort_by_key(|item| item.path.clone()),
-        SortBy::Tag => items.sort_by_key(|item| item.tags.get(0).cloned().unwrap_or_default()),
+        SortBy::Tag => items.sort_by_key(|item| item.tags.first().cloned().unwrap_or_default()),
         SortBy::Group => items.sort_by_key(|item| item.group.clone().unwrap_or_default()),
         SortBy::Recent => items.sort_by_key(|item| item.last_used.unwrap_or(0)),
         SortBy::Uses => items.sort_by_key(|item| item.uses),
     }
-    let should_reverse = reverse
-        || matches!(sort, SortBy::Recent | SortBy::Uses);
+    let should_reverse = reverse || matches!(sort, SortBy::Recent | SortBy::Uses);
     if should_reverse {
         items.reverse();
     }
@@ -1144,10 +1137,7 @@ fn apply_group(store: &mut Store, args: GroupArgs) -> Result<()> {
     }
 
     let group = args.group.as_deref().context("Provide a group")?;
-    let target = args
-        .target
-        .as_deref()
-        .context("Provide a target")?;
+    let target = args.target.as_deref().context("Provide a target")?;
     let idx = resolve_target_index(store, target)?;
     store.items[idx].group = Some(group.to_string());
     Ok(())
@@ -1178,14 +1168,16 @@ fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Opt
                 item.tags.join(",")
             };
             let path = format_path(item.path.as_str(), opts.path_format)?;
-            writeln!(stdin, "{}\t{}\t{}\t{}\t{}", item.id, alias, group, path, tags)
-                .context("write to fzf")?;
+            writeln!(
+                stdin,
+                "{}\t{}\t{}\t{}\t{}",
+                item.id, alias, group, path, tags
+            )
+            .context("write to fzf")?;
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .context("wait for fzf")?;
+    let output = child.wait_with_output().context("wait for fzf")?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -1260,7 +1252,11 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
             let size = frame.size();
             let sections = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(2)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(3),
+                    Constraint::Length(2),
+                ])
                 .split(size);
 
             let base_search = args.search.as_deref().unwrap_or("-");
@@ -1320,50 +1316,48 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
             frame.render_widget(footer, sections[2]);
         })?;
 
-        if event::poll(Duration::from_millis(200)).context("poll input")? {
-            if let Event::Key(KeyEvent { code, modifiers, .. }) =
-                event::read().context("read input")?
-            {
-                match (code, modifiers) {
-                    (KeyCode::Esc, _) => return Ok(None),
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(None),
-                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                        filter.clear();
-                        selected_index = 0;
-                    }
-                    (KeyCode::Up, _) => {
-                        if selected_index > 0 {
-                            selected_index -= 1;
-                        }
-                    }
-                    (KeyCode::Down, _) => {
-                        selected_index = selected_index.saturating_add(1);
-                    }
-                    (KeyCode::Home, _) => selected_index = 0,
-                    (KeyCode::End, _) => selected_index = usize::MAX,
-                    (KeyCode::Backspace, _) => {
-                        filter.pop();
-                        selected_index = 0;
-                    }
-                    (KeyCode::Enter, _) => {
-                        let mut items = filtered_items(store, &base_filters);
-                        if !filter.is_empty() {
-                            let filter_lower = filter.to_lowercase();
-                            items.retain(|item| matches_query(item, filter_lower.as_str()));
-                        }
-                        sort_items(&mut items, list_opts.sort, list_opts.reverse);
-                        if items.is_empty() {
-                            continue;
-                        }
-                        let idx = selected_index.min(items.len() - 1);
-                        return Ok(Some(items[idx].id));
-                    }
-                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                        filter.push(ch);
-                        selected_index = 0;
-                    }
-                    _ => {}
+        if event::poll(Duration::from_millis(200)).context("poll input")?
+            && let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read().context("read input")?
+        {
+            match (code, modifiers) {
+                (KeyCode::Esc, _) => return Ok(None),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(None),
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                    filter.clear();
+                    selected_index = 0;
                 }
+                (KeyCode::Up, _) => {
+                    selected_index = selected_index.saturating_sub(1);
+                }
+                (KeyCode::Down, _) => {
+                    selected_index = selected_index.saturating_add(1);
+                }
+                (KeyCode::Home, _) => selected_index = 0,
+                (KeyCode::End, _) => selected_index = usize::MAX,
+                (KeyCode::Backspace, _) => {
+                    filter.pop();
+                    selected_index = 0;
+                }
+                (KeyCode::Enter, _) => {
+                    let mut items = filtered_items(store, &base_filters);
+                    if !filter.is_empty() {
+                        let filter_lower = filter.to_lowercase();
+                        items.retain(|item| matches_query(item, filter_lower.as_str()));
+                    }
+                    sort_items(&mut items, list_opts.sort, list_opts.reverse);
+                    if items.is_empty() {
+                        continue;
+                    }
+                    let idx = selected_index.min(items.len() - 1);
+                    return Ok(Some(items[idx].id));
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    filter.push(ch);
+                    selected_index = 0;
+                }
+                _ => {}
             }
         }
     }
@@ -1391,11 +1385,11 @@ fn export_store(store: &Store, file: Option<PathBuf>) -> Result<()> {
     let data = serde_json::to_vec_pretty(store).context("serialize store")?;
     match file {
         Some(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)
-                        .with_context(|| format!("create {}", parent.display()))?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
             }
             fs::write(&path, data).with_context(|| format!("write {}", path.display()))?;
         }
@@ -1430,10 +1424,10 @@ fn merge_store(existing: &mut Store, mut imported: Store) -> Result<()> {
         .filter_map(|item| item.alias.clone())
         .collect();
     for item in imported.items.iter() {
-        if let Some(alias) = item.alias.as_ref() {
-            if aliases.iter().any(|a| a == alias) {
-                bail!("Alias conflict during merge: {alias}");
-            }
+        if let Some(alias) = item.alias.as_ref()
+            && aliases.iter().any(|a| a == alias)
+        {
+            bail!("Alias conflict during merge: {alias}");
         }
     }
     let mut next_id = existing.next_id.max(1);
@@ -1460,7 +1454,12 @@ fn check_missing(store: &Store, format: PathFormat) -> Result<()> {
     for item in store.items.iter() {
         if !Path::new(item.path.as_str()).exists() {
             let path = format_path(item.path.as_str(), format)?;
-            println!("{}\t{}\t{}", item.id, item.alias.as_deref().unwrap_or("-"), path);
+            println!(
+                "{}\t{}\t{}",
+                item.id,
+                item.alias.as_deref().unwrap_or("-"),
+                path
+            );
         }
     }
     Ok(())
@@ -1476,11 +1475,7 @@ fn prune_missing(store: &mut Store) -> Result<usize> {
 }
 
 fn run_with_command(command: &[String], path: &str) -> Result<()> {
-    let mut cmd = ProcessCommand::new(
-        command
-            .first()
-            .context("Provide a command after --")?,
-    );
+    let mut cmd = ProcessCommand::new(command.first().context("Provide a command after --")?);
     let mut args: Vec<String> = Vec::new();
     let mut replaced = false;
     for arg in command.iter().skip(1) {
@@ -1715,7 +1710,8 @@ mod tests {
 
         let outside = tempdir().expect("tempdir");
         let outside_str = outside.path().to_string_lossy().to_string();
-        let outside_rel = format_path(&outside_str, PathFormat::Relative).expect("relative outside");
+        let outside_rel =
+            format_path(&outside_str, PathFormat::Relative).expect("relative outside");
         assert_eq!(outside_rel, outside_str);
 
         if let Some(user_dirs) = UserDirs::new() {
@@ -1887,7 +1883,11 @@ fn normalize_path(input: &Path) -> Result<PathBuf> {
 
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     tags.into_iter()
-        .flat_map(|tag| tag.split(',').map(|t| t.trim().to_string()).collect::<Vec<_>>())
+        .flat_map(|tag| {
+            tag.split(',')
+                .map(|t| t.trim().to_string())
+                .collect::<Vec<_>>()
+        })
         .filter(|tag| !tag.is_empty())
         .collect()
 }
@@ -1959,9 +1959,7 @@ fn expand_and_absolute(input: &Path) -> Result<PathBuf> {
 fn normalize_path_lenient(input: &Path) -> Result<PathBuf> {
     let absolute = expand_and_absolute(input)?;
     if absolute.exists() {
-        Ok(absolute
-            .canonicalize()
-            .context("canonicalize path")?)
+        Ok(absolute.canonicalize().context("canonicalize path")?)
     } else {
         Ok(absolute)
     }
