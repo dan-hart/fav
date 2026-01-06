@@ -444,7 +444,7 @@ fn main() -> Result<()> {
                 bail!("--set-tags can only be used with --tag");
             }
             if !has_alias && !has_clear_alias && tag_actions == 0 {
-                bail!("Provide metadata to update (alias or tags)");
+                bail!("Provide metadata to update (alias or tags). See `fav meta --help`.");
             }
 
             let mut alias_updated = false;
@@ -550,7 +550,7 @@ fn main() -> Result<()> {
         }
         Command::Io(args) => {
             if args.export == args.import {
-                bail!("Choose exactly one of --export or --import");
+                bail!("Choose exactly one of --export or --import. See `fav io --help`.");
             }
             if args.merge && !args.import {
                 bail!("--merge can only be used with --import");
@@ -880,7 +880,7 @@ fn parse_rename(value: &str) -> Result<(&str, &str)> {
     let old = parts.next().unwrap_or_default().trim();
     let new = parts.next().unwrap_or_default().trim();
     if old.is_empty() || new.is_empty() {
-        bail!("Rename must be in the form old=new");
+        bail!("Rename must be in the form old=new (example: --rename-tag old=new)");
     }
     Ok((old, new))
 }
@@ -1141,7 +1141,11 @@ fn import_store(file: Option<PathBuf>) -> Result<Store> {
                 .context("read stdin")?;
         }
     }
-    let mut store: Store = serde_json::from_str(&data).context("parse store")?;
+    if data.trim().is_empty() {
+        bail!("No input provided. Use --file <path> or pipe JSON to stdin.");
+    }
+    let mut store: Store =
+        serde_json::from_str(&data).context("parse store (expected fav JSON)")?;
     sync_store(&mut store);
     Ok(store)
 }
@@ -1156,7 +1160,7 @@ fn merge_store(existing: &mut Store, mut imported: Store) -> Result<()> {
         if let Some(alias) = item.alias.as_ref()
             && aliases.iter().any(|a| a == alias)
         {
-            bail!("Alias conflict during merge: {alias}");
+            bail!("Alias conflict during merge: {alias}. Rename it before importing.");
         }
     }
     let mut next_id = existing.next_id.max(1);
@@ -1195,7 +1199,11 @@ fn prune_missing(store: &mut Store) -> Result<usize> {
 }
 
 fn run_with_command(command: &[String], path: &str) -> Result<()> {
-    let mut cmd = ProcessCommand::new(command.first().context("Provide a command after --")?);
+    let mut cmd = ProcessCommand::new(
+        command
+            .first()
+            .context("Provide a command after -- (example: fav with <target> -- ls -la)")?,
+    );
     let mut args: Vec<String> = Vec::new();
     let mut replaced = false;
     for arg in command.iter().skip(1) {
@@ -1567,9 +1575,12 @@ mod tests {
 
 fn normalize_path(input: &Path) -> Result<PathBuf> {
     let absolute = expand_and_absolute(input)?;
-    let canonical = absolute
-        .canonicalize()
-        .with_context(|| format!("Path does not exist: {}", absolute.display()))?;
+    let canonical = absolute.canonicalize().with_context(|| {
+        format!(
+            "Path does not exist: {}. Provide an existing path.",
+            absolute.display()
+        )
+    })?;
     Ok(canonical)
 }
 
@@ -1590,7 +1601,7 @@ fn resolve_target_index(store: &Store, target: &str) -> Result<usize> {
             .items
             .iter()
             .position(|item| item.id == id)
-            .context("No favorite with that id");
+            .with_context(|| format!("No favorite with id {id}. Run `fav list` to see ids."));
     }
     if let Some(idx) = store
         .items
@@ -1600,12 +1611,17 @@ fn resolve_target_index(store: &Store, target: &str) -> Result<usize> {
         return Ok(idx);
     }
     let normalized = normalize_path_lenient(Path::new(target))?;
-    let normalized = normalized.to_string_lossy();
-    store
+    let normalized = normalized.to_string_lossy().to_string();
+    if let Some(idx) = store
         .items
         .iter()
         .position(|item| item.path == normalized || item.path == target)
-        .context("No favorite with that path")
+    {
+        return Ok(idx);
+    }
+    bail!(
+        "No favorite matches target '{target}' (normalized to {normalized}). Run `fav list` or `fav add`."
+    )
 }
 
 fn validate_alias(alias: &str) -> Result<()> {
@@ -1627,7 +1643,7 @@ fn ensure_unique_alias(store: &Store, alias: &str) -> Result<()> {
         .iter()
         .any(|item| item.alias.as_deref() == Some(alias))
     {
-        bail!("Alias already in use");
+        bail!("Alias already in use: {alias}");
     }
     Ok(())
 }

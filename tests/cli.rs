@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::cargo_bin_cmd;
+use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -402,6 +403,36 @@ fn tag_set_without_tags_errors() {
 
     let id = add_with_alias(&config, &file_path, "tagset", "work");
     run_fav(&["meta", &id.to_string(), "--set-tags"], &config).failure();
+}
+
+#[test]
+fn get_missing_id_includes_hint() {
+    let (_dir, config) = temp_config();
+    run_fav(&["get", "999"], &config)
+        .failure()
+        .stderr(predicate::str::contains("No favorite with id 999"));
+}
+
+#[test]
+fn add_missing_path_includes_hint() {
+    let (_dir, config) = temp_config();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let missing_path = tmp.path().join("missing.txt");
+    run_fav(&["add", missing_path.to_str().unwrap()], &config)
+        .failure()
+        .stderr(predicate::str::contains("Path does not exist"));
+}
+
+#[test]
+fn import_empty_stdin_errors() {
+    let (_dir, config) = temp_config();
+    let mut cmd = cargo_bin_cmd!("fav");
+    cmd.env("FAV_CONFIG", &config)
+        .args(["io", "--import"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No input provided"));
 }
 
 #[cfg(feature = "coverage")]
