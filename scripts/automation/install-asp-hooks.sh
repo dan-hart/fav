@@ -47,9 +47,17 @@ if [[ -n "${ASP_PREFLIGHT_FLAGS:-}" ]]; then
 fi
 
 if command -v asp-preflight >/dev/null 2>&1; then
-  asp-preflight --staged --strict "${ASP_FLAGS[@]}"
+  if ((${#ASP_FLAGS[@]})); then
+    asp-preflight --staged --strict "${ASP_FLAGS[@]}"
+  else
+    asp-preflight --staged --strict
+  fi
 elif [[ -x "./scripts/utilities/asp-preflight.sh" ]]; then
-  ./scripts/utilities/asp-preflight.sh --staged --strict "${ASP_FLAGS[@]}"
+  if ((${#ASP_FLAGS[@]})); then
+    ./scripts/utilities/asp-preflight.sh --staged --strict "${ASP_FLAGS[@]}"
+  else
+    ./scripts/utilities/asp-preflight.sh --staged --strict
+  fi
 else
   echo "ASP preflight script not found. Install or fix path." >&2
   exit 1

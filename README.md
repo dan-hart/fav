@@ -16,6 +16,19 @@ Remember paths once, then use them everywhere.
 cargo install --path .
 ```
 
+## Getting started
+
+```bash
+# save the current directory
+fav add
+
+# see your ids and aliases
+fav list
+
+# recall a path by id or alias
+fav 1
+```
+
 ## Quick start
 
 ```bash
