@@ -1,7 +1,5 @@
 # Fav Expert Workflows Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Add shell integration, smarter ranking, queryable notes, expert commands, presets, repair tools, and importers without breaking the current `fav` workflow.
 
 **Architecture:** Keep the current Rust binary structure and add focused helper functions/types inside the existing codebase rather than doing a broad refactor first. Advanced features are isolated behind new top-level expert commands and additive flags, while the current `add/list/get/with` behavior remains compatible.

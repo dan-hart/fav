@@ -1385,6 +1385,9 @@ fn parse_query(input: &str) -> Result<QuerySpec> {
             negated,
         });
     }
+    if terms.is_empty() {
+        bail!("Query cannot be empty. Example: tag:work");
+    }
     Ok(QuerySpec { terms })
 }
 
@@ -1633,6 +1636,30 @@ fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Opt
     Ok(items.first().map(|item| item.id))
 }
 
+fn tui_items<'a>(
+    store: &'a Store,
+    filters: &Filters,
+    sort: SortBy,
+    reverse: bool,
+    smart: bool,
+    filter: &str,
+) -> Vec<&'a Favorite> {
+    let mut items = filtered_items(store, filters);
+    if !filter.is_empty() {
+        let filter_lower = filter.to_lowercase();
+        items.retain(|item| matches_text_query(item, filter_lower.as_str()));
+    }
+    sort_items(
+        &mut items,
+        sort,
+        reverse,
+        filters,
+        smart,
+        (!filter.is_empty()).then_some(filter),
+    );
+    items
+}
+
 #[cfg(not(feature = "coverage"))]
 struct TuiCleanup;
 
@@ -1672,18 +1699,13 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let mut selected_index: usize = 0;
 
     loop {
-        let mut items = filtered_items(store, &base_filters);
-        if !filter.is_empty() {
-            let filter_lower = filter.to_lowercase();
-            items.retain(|item| matches_text_query(item, filter_lower.as_str()));
-        }
-        sort_items(
-            &mut items,
+        let items = tui_items(
+            store,
+            &base_filters,
             list_opts.sort,
             list_opts.reverse,
-            &base_filters,
-            true,
-            (!filter.is_empty()).then_some(filter.as_str()),
+            list_opts.smart,
+            filter.as_str(),
         );
 
         if items.is_empty() {
@@ -1779,18 +1801,13 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                     selected_index = 0;
                 }
                 (KeyCode::Enter, _) => {
-                    let mut items = filtered_items(store, &base_filters);
-                    if !filter.is_empty() {
-                        let filter_lower = filter.to_lowercase();
-                        items.retain(|item| matches_text_query(item, filter_lower.as_str()));
-                    }
-                    sort_items(
-                        &mut items,
+                    let items = tui_items(
+                        store,
+                        &base_filters,
                         list_opts.sort,
                         list_opts.reverse,
-                        &base_filters,
-                        true,
-                        (!filter.is_empty()).then_some(filter.as_str()),
+                        list_opts.smart,
+                        filter.as_str(),
                     );
                     if items.is_empty() {
                         continue;
@@ -1823,15 +1840,7 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
         smart: args.smart,
         show_notes: false,
     };
-    let mut items = filtered_items(store, &filters);
-    sort_items(
-        &mut items,
-        opts.sort,
-        opts.reverse,
-        &filters,
-        opts.smart,
-        None,
-    );
+    let items = tui_items(store, &filters, opts.sort, opts.reverse, opts.smart, "");
     Ok(items.first().map(|item| item.id))
 }
 
@@ -2503,6 +2512,11 @@ mod tests {
     }
 
     #[test]
+    fn parse_query_rejects_empty_input() {
+        assert!(parse_query("   ").is_err());
+    }
+
+    #[test]
     fn filters_by_structured_query() {
         let store = sample_store();
         let filters = Filters {
@@ -2527,6 +2541,52 @@ mod tests {
         sort_items(&mut items, SortBy::Id, false, &filters, true, None);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
         assert_eq!(ids[0], 3);
+    }
+
+    #[test]
+    fn tui_items_respect_smart_flag() {
+        let store = Store {
+            version: STORE_VERSION,
+            next_id: 3,
+            items: vec![
+                Favorite {
+                    id: 1,
+                    path: "/tmp/docs-exact".to_string(),
+                    alias: Some("docs".to_string()),
+                    tags: Vec::new(),
+                    note: None,
+                    uses: 0,
+                    last_used: Some(10),
+                },
+                Favorite {
+                    id: 2,
+                    path: "/tmp/docs-recent".to_string(),
+                    alias: Some("recent".to_string()),
+                    tags: Vec::new(),
+                    note: Some("docs backup".to_string()),
+                    uses: 0,
+                    last_used: Some(100),
+                },
+            ],
+            presets: Vec::new(),
+        };
+        let filters = Filters {
+            search: None,
+            tags: Vec::new(),
+            query: None,
+        };
+
+        let plain_ids: Vec<u64> = tui_items(&store, &filters, SortBy::Recent, false, false, "docs")
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(plain_ids, vec![2, 1]);
+
+        let smart_ids: Vec<u64> = tui_items(&store, &filters, SortBy::Recent, false, true, "docs")
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(smart_ids, vec![1, 2]);
     }
 
     #[test]
