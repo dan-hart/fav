@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-03-31
 ### Added
 - Notes on favorites via `add --note` and `meta --note`
 - Structured query filtering, smart ranking, and optional note display in listings

@@ -3,6 +3,10 @@
 ## Install
 
 ```
+# Homebrew
+brew install dan-hart/tap/fav
+
+# local source checkout
 cargo install --path .
 ```
 
