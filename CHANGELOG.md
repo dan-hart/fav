@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- Notes on favorites via `add --note` and `meta --note`
+- Structured query filtering, smart ranking, and optional note display in listings
+- Expert commands for shell helpers, system open, reusable presets, duplicate checks, path repair, and importing from history/path files
+- `with --dry-run` and query-based batch `meta`/`rm` flows guarded by `--yes`
 
 ## [0.1.4] - 2026-01-06
 ### Added
