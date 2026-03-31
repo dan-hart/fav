@@ -60,6 +60,14 @@ fn find_by_id(items: &[Value], id: u64) -> Value {
         .expect("item")
 }
 
+fn find_by_alias(items: &[Value], alias: &str) -> Value {
+    items
+        .iter()
+        .find(|item| item.get("alias").and_then(|v| v.as_str()) == Some(alias))
+        .cloned()
+        .expect("item")
+}
+
 #[test]
 fn add_list_alias_tag_flow() {
     let (_dir, config) = temp_config();
@@ -364,6 +372,287 @@ fn add_without_id_only_outputs_message() {
 
     let output = output_fav(&["add", file_path.to_str().unwrap()], &config);
     assert!(output.contains("Added favorite"));
+}
+
+#[test]
+fn notes_query_and_batch_updates_work() {
+    let (_dir, config) = temp_config();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let file_one = data_dir.path().join("alpha.txt");
+    let file_two = data_dir.path().join("beta.txt");
+    fs::write(&file_one, "alpha").expect("write");
+    fs::write(&file_two, "beta").expect("write");
+
+    let alpha_id = output_fav(
+        &[
+            "add",
+            file_one.to_str().unwrap(),
+            "--alias",
+            "alpha",
+            "--tag",
+            "work",
+            "--note",
+            "Primary project notes",
+            "--id-only",
+        ],
+        &config,
+    )
+    .parse::<u64>()
+    .expect("id");
+
+    output_fav(
+        &[
+            "add",
+            file_two.to_str().unwrap(),
+            "--alias",
+            "beta",
+            "--tag",
+            "archive",
+            "--id-only",
+        ],
+        &config,
+    );
+
+    let queried = output_fav(
+        &["list", "--query", "note:project", "--format", "json"],
+        &config,
+    );
+    let queried_items: Vec<Value> = serde_json::from_str(&queried).expect("query json");
+    assert_eq!(
+        find_by_id(&queried_items, alpha_id).get("alias").unwrap(),
+        "alpha"
+    );
+
+    run_fav(
+        &[
+            "meta",
+            "--query",
+            "tag:archive",
+            "--note",
+            "Cold storage",
+            "--yes",
+        ],
+        &config,
+    )
+    .success();
+    let items = list_json(&config);
+    let beta = find_by_alias(&items, "beta");
+    assert_eq!(
+        beta.get("note").and_then(|v| v.as_str()),
+        Some("Cold storage")
+    );
+
+    run_fav(&["rm", "--query", "tag:archive", "--yes"], &config).success();
+    let items = list_json(&config);
+    assert!(
+        items
+            .iter()
+            .all(|item| item.get("alias").and_then(|v| v.as_str()) != Some("beta"))
+    );
+}
+
+#[test]
+fn meta_can_clear_notes() {
+    let (_dir, config) = temp_config();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let file_path = data_dir.path().join("noted.txt");
+    fs::write(&file_path, "noted").expect("write");
+
+    let id = output_fav(
+        &[
+            "add",
+            file_path.to_str().unwrap(),
+            "--alias",
+            "noted",
+            "--note",
+            "Needs cleanup",
+            "--id-only",
+        ],
+        &config,
+    )
+    .parse::<u64>()
+    .expect("id");
+
+    run_fav(&["meta", &id.to_string(), "--clear-note"], &config).success();
+    let items = list_json(&config);
+    let item = find_by_id(&items, id);
+    assert!(item.get("note").is_none() || item.get("note").unwrap().is_null());
+}
+
+#[test]
+fn shell_open_and_presets_work() {
+    let (_dir, config) = temp_config();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let file_path = data_dir.path().join("open.txt");
+    fs::write(&file_path, "open").expect("write");
+
+    let id = output_fav(
+        &[
+            "add",
+            file_path.to_str().unwrap(),
+            "--alias",
+            "openit",
+            "--id-only",
+        ],
+        &config,
+    )
+    .parse::<u64>()
+    .expect("id");
+
+    let shell = output_fav(&["shell", "init", "zsh"], &config);
+    assert!(shell.contains("fcd()"));
+    assert!(shell.contains("fav preset run"));
+
+    let open_cmd = output_fav(&["open", &id.to_string(), "--dry-run"], &config);
+    assert!(open_cmd.contains(file_path.canonicalize().unwrap().to_string_lossy().as_ref()));
+
+    run_fav(
+        &[
+            "preset",
+            "add",
+            "show",
+            "--note",
+            "Show the selected path",
+            "--",
+            "printf",
+            "%s",
+            "{}",
+        ],
+        &config,
+    )
+    .success();
+    let preset_list = output_fav(&["preset", "list"], &config);
+    assert!(preset_list.contains("show"));
+
+    let preset_run = output_fav(&["preset", "run", "show", "openit", "--dry-run"], &config);
+    assert!(preset_run.contains("printf"));
+    assert!(preset_run.contains(file_path.canonicalize().unwrap().to_string_lossy().as_ref()));
+
+    run_fav(&["preset", "rm", "show"], &config).success();
+}
+
+#[test]
+fn doctor_duplicates_and_repair_dry_run_work() {
+    let (_dir, config) = temp_config();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let dup_path = data_dir.path().join("dup.txt");
+    fs::write(&dup_path, "dup").expect("write");
+    let dup_path = dup_path.canonicalize().expect("canonicalize");
+
+    let config_json = serde_json::json!({
+        "version": 2,
+        "next_id": 4,
+        "items": [
+            {"id": 1, "path": dup_path, "alias": "one", "tags": [], "note": null, "uses": 0, "last_used": null},
+            {"id": 2, "path": dup_path, "alias": "two", "tags": [], "note": null, "uses": 0, "last_used": null}
+        ],
+        "presets": []
+    });
+    fs::write(&config, serde_json::to_vec(&config_json).expect("json")).expect("write config");
+
+    let duplicates = output_fav(&["doctor", "duplicates"], &config);
+    assert!(duplicates.contains("path"));
+    assert!(duplicates.contains(dup_path.to_string_lossy().as_ref()));
+
+    let old_root = data_dir.path().join("old");
+    let new_root = data_dir.path().join("new");
+    fs::create_dir_all(&new_root).expect("new root");
+    let new_file = new_root.join("moved.txt");
+    fs::write(&new_file, "moved").expect("new file");
+    let old_file = old_root.join("moved.txt");
+
+    let repair_json = serde_json::json!({
+        "version": 2,
+        "next_id": 3,
+        "items": [
+            {"id": 1, "path": old_file, "alias": "moved", "tags": [], "note": null, "uses": 0, "last_used": null}
+        ],
+        "presets": []
+    });
+    fs::write(&config, serde_json::to_vec(&repair_json).expect("json")).expect("write config");
+
+    let repair = output_fav(
+        &[
+            "doctor",
+            "repair",
+            "--from",
+            old_root.to_str().unwrap(),
+            "--to",
+            new_root.to_str().unwrap(),
+            "--dry-run",
+        ],
+        &config,
+    );
+    assert!(repair.contains("moved"));
+    assert!(repair.contains(new_file.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn importers_and_with_dry_run_work() {
+    let (_dir, config) = temp_config();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let hist_dir = data_dir.path().join("hist");
+    let json_dir = data_dir.path().join("json");
+    fs::create_dir_all(&hist_dir).expect("hist dir");
+    fs::create_dir_all(&json_dir).expect("json dir");
+
+    let hist_target = hist_dir.canonicalize().expect("canonicalize hist");
+    let path_target = json_dir.canonicalize().expect("canonicalize json");
+
+    let history_file = data_dir.path().join("zsh_history");
+    fs::write(
+        &history_file,
+        format!(": 1710000000:0;cd {}\n", hist_target.to_string_lossy()),
+    )
+    .expect("write history");
+
+    run_fav(
+        &[
+            "import",
+            "history",
+            "--shell",
+            "zsh",
+            "--file",
+            history_file.to_str().unwrap(),
+            "--tag",
+            "history",
+        ],
+        &config,
+    )
+    .success();
+
+    let paths_file = data_dir.path().join("paths.json");
+    fs::write(
+        &paths_file,
+        serde_json::to_vec(&vec![path_target.to_string_lossy().to_string()]).expect("json"),
+    )
+    .expect("write paths");
+
+    run_fav(
+        &[
+            "import",
+            "paths",
+            "--file",
+            paths_file.to_str().unwrap(),
+            "--note",
+            "Imported from file",
+        ],
+        &config,
+    )
+    .success();
+
+    let items = list_json(&config);
+    assert!(items.iter().any(|item| {
+        item.get("path").and_then(|v| v.as_str()) == Some(hist_target.to_string_lossy().as_ref())
+    }));
+    assert!(
+        items.iter().any(|item| {
+            item.get("note").and_then(|v| v.as_str()) == Some("Imported from file")
+        })
+    );
+
+    let with_dry_run = output_fav(&["with", "1", "--dry-run", "--", "printf", "%s"], &config);
+    assert!(with_dry_run.contains("printf"));
 }
 
 #[test]

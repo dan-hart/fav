@@ -11,7 +11,7 @@
 Add a favorite file or directory.
 
 ```
-fav add [path] [--alias <name>] [--tag <tag>...] [--id-only]
+fav add [path] [--alias <name>] [--tag <tag>...] [--note <text>] [--id-only]
 ```
 
 If `path` is omitted, the current directory is used.
@@ -22,12 +22,19 @@ If `path` is omitted, the current directory is used.
 List favorites with optional filters and formatting.
 
 ```
-fav list [--tag <tag>...] [--search <query>]
+fav list [--tag <tag>...] [--search <query>] [--query <expr>] [--smart]
          [--format table|plain|json]
+         [--show-notes]
          [--path-format tilde|absolute|relative]
          [--sort id|alias|path|tag|recent|uses]
          [--reverse]
 ```
+
+Query examples:
+- `tag:work note:project`
+- `alias:todo -tag:archive`
+- `missing:true`
+- `dupe:true`
 
 ## get
 
@@ -39,10 +46,12 @@ fav get <target> [--path-format tilde|absolute|relative]
 
 ## meta
 
-Update metadata for a favorite (alias and tags).
+Update metadata for one favorite or a query result set.
 
 ```
 fav meta <target> [--alias <name> | --clear-alias]
+fav meta --query <expr> --yes
+         [--note <text> | --clear-note]
          [--tag <tag>...] [--set-tags]
          [--rm-tag <tag>...]
          [--rename-tag old=new]
@@ -52,13 +61,15 @@ Notes:
 - `--set-tags` replaces existing tags (only with `--tag`)
 - `--rm-tag` removes matching tags (case-insensitive)
 - `--rename-tag` renames a tag (case-insensitive match on the old tag)
+- Query-based updates require `--yes`
+- Alias changes only work when exactly one favorite matches
 
 ## pick
 
 Interactive selection using `fzf` (path-only output).
 
 ```
-fav pick [--tag <tag>...] [--search <query>]
+fav pick [--tag <tag>...] [--search <query>] [--query <expr>] [--smart]
          [--path-format tilde|absolute|relative]
          [--display-path-format tilde|absolute|relative]
          [--sort id|alias|path|tag|recent|uses]
@@ -70,7 +81,7 @@ fav pick [--tag <tag>...] [--search <query>]
 Interactive terminal UI (path-only output).
 
 ```
-fav tui [--tag <tag>...] [--search <query>]
+fav tui [--tag <tag>...] [--search <query>] [--query <expr>] [--smart]
         [--path-format tilde|absolute|relative]
         [--display-path-format tilde|absolute|relative]
         [--sort id|alias|path|tag|recent|uses]
@@ -108,12 +119,13 @@ fav health [--path-format tilde|absolute|relative] [--prune]
 Run a command using a favorite path.
 
 ```
-fav with <target> -- <command> [args...]
+fav with <target> [--dry-run] -- <command> [args...]
 ```
 
 Behavior:
 - If any argument contains `{}`, it will be replaced with the path.
 - Otherwise the path is appended to the end of the command.
+- `--dry-run` prints the resolved command instead of running it.
 
 Examples:
 
@@ -127,8 +139,68 @@ fav with dotfiles -- rg "TODO" {}
 
 ## rm
 
-Remove a favorite by id, alias, or path.
+Remove a favorite by id, alias, path, or query.
 
 ```
 fav rm <target>
+fav rm --query <expr> --yes
 ```
+
+Query-based removals require `--yes`.
+
+## shell
+
+Print shell helpers for `zsh`, `bash`, or `fish`.
+
+```
+fav shell init <zsh|bash|fish>
+```
+
+This outputs helper functions such as `fcd`, `fopen`, and `frun`.
+
+## open
+
+Open a favorite with the system opener.
+
+```
+fav open <target> [--dry-run]
+```
+
+## preset
+
+Manage reusable command templates.
+
+```
+fav preset add <name> [--note <text>] -- <command> [args...]
+fav preset list
+fav preset run <name> <target> [--dry-run]
+fav preset rm <name>
+```
+
+Presets use the same `{}` placeholder rules as `fav with`.
+
+## doctor
+
+Inspect duplicates or repair missing paths.
+
+```
+fav doctor duplicates
+fav doctor repair --from <old-root> --to <new-root> [--dry-run]
+```
+
+`duplicates` reports exact duplicate paths and normalized alias collisions.
+`repair` rewrites missing paths when the new path exists under the replacement root.
+
+## import
+
+Import favorites from shell history or path files.
+
+```
+fav import history [--shell auto|zsh|bash|fish] [--file <path>] [--limit <n>]
+                  [--tag <tag>...] [--note <text>]
+
+fav import paths [--file <path>] [--tag <tag>...] [--note <text>]
+```
+
+`import history` reads shell history and imports discovered paths.
+`import paths` accepts newline-delimited paths, CSV, JSON arrays of strings, and bookmark HTML files with `file://` links.

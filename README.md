@@ -6,8 +6,9 @@ Remember paths once, then use them everywhere.
 
 - Instant path recall by id or alias
 - Tags for organization
+- Notes, structured queries, and smarter ranking
 - `fav with` runs commands with a favorite path (no subshells)
-- Search, pick (fzf), and import/export
+- Shell helpers, presets, duplicate checks, repair tools, and importers
 - Works on macOS and Linux
 
 ## Install
@@ -35,8 +36,8 @@ fav 1
 # add current directory
 fav add
 
-# add a file with alias and tags
-fav add ./notes/todo.md --alias todo --tag notes
+# add a file with alias, tags, and a note
+fav add ./notes/todo.md --alias todo --tag notes --note "Daily scratchpad"
 
 # list favorites
 fav
@@ -46,6 +47,9 @@ fav todo
 
 # run a command with a favorite path
 fav with todo -- cat
+
+# preview the resolved command without running it
+fav with todo --dry-run -- rg "TODO"
 ```
 
 ## Usage highlights
@@ -58,12 +62,30 @@ fav get 3
 # search + filter
 fav list --search notes
 fav list --tag work
+fav list --query "tag:work note:project" --smart
 
 # interactive pick (requires fzf)
 fav pick --tag work
 
 # built-in TUI
 fav tui --tag work
+
+# shell helpers
+eval "$(fav shell init zsh)"
+fcd todo
+
+# open paths and run presets
+fav open todo
+fav preset add grep-todo -- rg "TODO" {}
+fav preset run grep-todo todo
+
+# inspect duplicates or preview a path repair
+fav doctor duplicates
+fav doctor repair --from ~/old-root --to ~/new-root --dry-run
+
+# import from shell history or path files
+fav import history --shell zsh --limit 50
+fav import paths --file ./paths.json --tag imported
 
 # export/import
 fav io --export > backup.json

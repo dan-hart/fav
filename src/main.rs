@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -30,7 +31,7 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 
-const STORE_VERSION: u32 = 1;
+const STORE_VERSION: u32 = 2;
 
 #[derive(Parser)]
 #[command(
@@ -122,6 +123,16 @@ Examples:\n  fav with my-config -- cat\n  fav with 3 -- ls -la {}\n  fav with no
 Examples:\n  fav rm 1\n  fav rm dotfiles\n  fav rm ~/dotfiles\n  fav rm ./notes/todo.md\n"
     )]
     Rm(RemoveArgs),
+    #[command(about = "Generate shell helpers")]
+    Shell(ShellArgs),
+    #[command(about = "Open a favorite with the system opener")]
+    Open(OpenArgs),
+    #[command(about = "Manage reusable command presets")]
+    Preset(PresetArgs),
+    #[command(about = "Inspect duplicates or repair paths")]
+    Doctor(DoctorArgs),
+    #[command(about = "Import favorites from shell history or path files")]
+    Import(ImportArgs),
 }
 
 #[derive(Args)]
@@ -134,6 +145,9 @@ struct AddArgs {
     /// Tags to apply (repeatable or comma-separated)
     #[arg(short, long, value_delimiter = ',')]
     tag: Vec<String>,
+    /// Optional note or description
+    #[arg(long)]
+    note: Option<String>,
     /// Print only the id (script-friendly)
     #[arg(long)]
     id_only: bool,
@@ -147,6 +161,9 @@ struct ListArgs {
     /// Search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
+    /// Structured query (for example: tag:work note:project -tag:archive)
+    #[arg(long)]
+    query: Option<String>,
     /// Output format
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
@@ -159,6 +176,12 @@ struct ListArgs {
     /// Reverse sort order
     #[arg(long)]
     reverse: bool,
+    /// Use smarter ranking based on exact matches, usage, and recency
+    #[arg(long)]
+    smart: bool,
+    /// Include notes in human-readable output
+    #[arg(long)]
+    show_notes: bool,
 }
 
 #[derive(Args)]
@@ -173,7 +196,10 @@ struct GetArgs {
 #[derive(Args)]
 struct MetaArgs {
     /// Target id/alias/path
-    target: String,
+    target: Option<String>,
+    /// Structured query to target multiple favorites
+    #[arg(long)]
+    query: Option<String>,
     /// Set or replace alias
     #[arg(long)]
     alias: Option<String>,
@@ -192,6 +218,15 @@ struct MetaArgs {
     /// Rename a tag (format: old=new)
     #[arg(long)]
     rename_tag: Option<String>,
+    /// Set or replace note text
+    #[arg(long)]
+    note: Option<String>,
+    /// Clear note text
+    #[arg(long)]
+    clear_note: bool,
+    /// Confirm query-based updates
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(Args)]
@@ -202,6 +237,9 @@ struct PickArgs {
     /// Search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
+    /// Structured query (for example: tag:work note:project)
+    #[arg(long)]
+    query: Option<String>,
     /// How to render output paths
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
@@ -214,6 +252,9 @@ struct PickArgs {
     /// Reverse sort order
     #[arg(long)]
     reverse: bool,
+    /// Use smarter ranking based on exact matches, usage, and recency
+    #[arg(long)]
+    smart: bool,
 }
 
 #[derive(Args)]
@@ -224,6 +265,9 @@ struct TuiArgs {
     /// Initial search query (matches alias/path/tags)
     #[arg(long)]
     search: Option<String>,
+    /// Structured query (for example: tag:work note:project)
+    #[arg(long)]
+    query: Option<String>,
     /// How to render output paths
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
@@ -236,6 +280,9 @@ struct TuiArgs {
     /// Reverse sort order
     #[arg(long)]
     reverse: bool,
+    /// Use smarter ranking based on exact matches, usage, and recency
+    #[arg(long)]
+    smart: bool,
 }
 
 #[derive(Args)]
@@ -271,6 +318,9 @@ struct WithArgs {
     /// Command to run (use -- to separate)
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
+    /// Print the resolved command instead of running it
+    #[arg(long)]
+    dry_run: bool,
     /// How to render paths
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
@@ -279,7 +329,132 @@ struct WithArgs {
 #[derive(Args)]
 struct RemoveArgs {
     /// Target id/alias/path
+    target: Option<String>,
+    /// Structured query to target multiple favorites
+    #[arg(long)]
+    query: Option<String>,
+    /// Confirm query-based removals
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+struct ShellArgs {
+    #[command(subcommand)]
+    command: ShellCommand,
+}
+
+#[derive(Subcommand)]
+enum ShellCommand {
+    Init(ShellInitArgs),
+}
+
+#[derive(Args)]
+struct ShellInitArgs {
+    shell: ShellKind,
+}
+
+#[derive(Args)]
+struct OpenArgs {
     target: String,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args)]
+struct PresetArgs {
+    #[command(subcommand)]
+    command: PresetCommand,
+}
+
+#[derive(Subcommand)]
+enum PresetCommand {
+    Add(PresetAddArgs),
+    List,
+    Run(PresetRunArgs),
+    Rm(PresetRemoveArgs),
+}
+
+#[derive(Args)]
+struct PresetAddArgs {
+    name: String,
+    #[arg(long)]
+    note: Option<String>,
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(Args)]
+struct PresetRunArgs {
+    name: String,
+    target: String,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long, value_enum, default_value = "absolute")]
+    path_format: PathFormat,
+}
+
+#[derive(Args)]
+struct PresetRemoveArgs {
+    name: String,
+}
+
+#[derive(Args)]
+struct DoctorArgs {
+    #[command(subcommand)]
+    command: DoctorCommand,
+}
+
+#[derive(Subcommand)]
+enum DoctorCommand {
+    Duplicates,
+    Repair(DoctorRepairArgs),
+}
+
+#[derive(Args)]
+struct DoctorRepairArgs {
+    #[arg(long)]
+    from: PathBuf,
+    #[arg(long)]
+    to: PathBuf,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args)]
+struct ImportArgs {
+    #[command(subcommand)]
+    command: ImportCommand,
+}
+
+#[derive(Subcommand)]
+enum ImportCommand {
+    History(ImportHistoryArgs),
+    Paths(ImportPathsArgs),
+}
+
+#[derive(Args)]
+struct ImportHistoryArgs {
+    #[arg(long, value_enum, default_value = "auto")]
+    shell: HistoryShell,
+    #[arg(long)]
+    file: Option<PathBuf>,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long, value_delimiter = ',')]
+    tag: Vec<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Args)]
+struct ImportPathsArgs {
+    #[arg(long)]
+    file: Option<PathBuf>,
+    #[arg(long, value_delimiter = ',')]
+    tag: Vec<String>,
+    #[arg(long)]
+    note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -306,11 +481,37 @@ enum SortBy {
     Uses,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ShellKind {
+    Zsh,
+    Bash,
+    Fish,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+enum HistoryShell {
+    Auto,
+    Zsh,
+    Bash,
+    Fish,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Store {
     version: u32,
     next_id: u64,
+    #[serde(default)]
     items: Vec<Favorite>,
+    #[serde(default)]
+    presets: Vec<Preset>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Preset {
+    name: String,
+    command: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -319,6 +520,8 @@ struct Favorite {
     path: String,
     alias: Option<String>,
     tags: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
     #[serde(default)]
     uses: u64,
     #[serde(default)]
@@ -340,10 +543,13 @@ fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::List(ListArgs {
         tag: Vec::new(),
         search: None,
+        query: None,
         format: OutputFormat::Table,
         path_format: PathFormat::Relative,
         sort: SortBy::Id,
         reverse: false,
+        smart: false,
+        show_notes: false,
     })) {
         Command::Add(args) => {
             let path = args
@@ -382,6 +588,7 @@ fn main() -> Result<()> {
                 path: normalized.to_string_lossy().to_string(),
                 alias: args.alias,
                 tags,
+                note: args.note,
                 uses: 0,
                 last_used: None,
             });
@@ -407,12 +614,15 @@ fn main() -> Result<()> {
             let filters = Filters {
                 search: args.search.clone(),
                 tags: args.tag.clone(),
+                query: args.query.as_deref().map(parse_query).transpose()?,
             };
             let opts = ListOptions {
                 format: args.format,
                 path_format: args.path_format,
                 sort: args.sort,
                 reverse: args.reverse,
+                smart: args.smart,
+                show_notes: args.show_notes,
             };
             let count = list_items(&store, &filters, &opts)?;
             if count == 0 {
@@ -427,15 +637,21 @@ fn main() -> Result<()> {
             println!("{output}");
         }
         Command::Meta(args) => {
-            let idx = resolve_target_index(&store, &args.target)?;
+            let indices =
+                resolve_target_indices(&store, args.target.as_deref(), args.query.as_deref())?;
             let has_alias = args.alias.is_some();
             let has_clear_alias = args.clear_alias;
             let has_add_tags = !args.tag.is_empty();
             let has_rm_tags = !args.rm_tag.is_empty();
             let has_rename_tag = args.rename_tag.is_some();
+            let has_note = args.note.is_some();
+            let has_clear_note = args.clear_note;
             let tag_actions = has_add_tags as u8 + has_rm_tags as u8 + has_rename_tag as u8;
             if has_alias && has_clear_alias {
                 bail!("Choose only one of: --alias or --clear-alias");
+            }
+            if has_note && has_clear_note {
+                bail!("Choose only one of: --note or --clear-note");
             }
             if tag_actions > 1 {
                 bail!("Choose only one of: --tag, --rm-tag, or --rename-tag");
@@ -443,20 +659,29 @@ fn main() -> Result<()> {
             if args.set_tags && !has_add_tags {
                 bail!("--set-tags can only be used with --tag");
             }
-            if !has_alias && !has_clear_alias && tag_actions == 0 {
-                bail!("Provide metadata to update (alias or tags). See `fav meta --help`.");
+            if args.query.is_some() && !args.yes {
+                bail!("Use --yes with --query to update matching favorites.");
+            }
+            if !has_alias && !has_clear_alias && tag_actions == 0 && !has_note && !has_clear_note {
+                bail!("Provide metadata to update (alias, tags, or note). See `fav meta --help`.");
+            }
+            if (has_alias || has_clear_alias) && indices.len() != 1 {
+                bail!("Alias updates require exactly one matched favorite.");
             }
 
             let mut alias_updated = false;
             let mut tags_updated = false;
+            let mut note_updated = false;
 
             if has_clear_alias {
+                let idx = indices[0];
                 store.items[idx].alias = None;
                 alias_updated = true;
             } else if let Some(alias) = args.alias.as_deref() {
+                let idx = indices[0];
                 validate_alias(alias)?;
                 if store.items[idx].alias.as_deref() != Some(alias) {
-                    ensure_unique_alias(&store, alias)?;
+                    ensure_unique_alias_except(&store, alias, idx)?;
                     store.items[idx].alias = Some(alias.to_string());
                     alias_updated = true;
                 }
@@ -464,62 +689,103 @@ fn main() -> Result<()> {
 
             if let Some(rename) = args.rename_tag.as_deref() {
                 let (old, new) = parse_rename(rename)?;
-                let tags = &mut store.items[idx].tags;
-                for tag in tags.iter_mut() {
-                    if tag.eq_ignore_ascii_case(old) {
-                        *tag = new.to_string();
+                for idx in &indices {
+                    let tags = &mut store.items[*idx].tags;
+                    for tag in tags.iter_mut() {
+                        if tag.eq_ignore_ascii_case(old) {
+                            *tag = new.to_string();
+                        }
                     }
+                    tags.sort();
+                    tags.dedup();
                 }
-                tags.sort();
-                tags.dedup();
                 tags_updated = true;
             } else if has_rm_tags {
                 let remove = normalize_tags(args.rm_tag);
-                store.items[idx]
-                    .tags
-                    .retain(|tag| !remove.iter().any(|rm| rm.eq_ignore_ascii_case(tag)));
+                for idx in &indices {
+                    store.items[*idx]
+                        .tags
+                        .retain(|tag| !remove.iter().any(|rm| rm.eq_ignore_ascii_case(tag)));
+                }
                 tags_updated = true;
             } else if has_add_tags {
-                let mut tags = normalize_tags(args.tag);
-                if args.set_tags {
-                    store.items[idx].tags = tags;
-                } else {
-                    store.items[idx].tags.append(&mut tags);
-                    store.items[idx].tags.sort();
-                    store.items[idx].tags.dedup();
+                let tags = normalize_tags(args.tag);
+                for idx in &indices {
+                    if args.set_tags {
+                        store.items[*idx].tags = tags.clone();
+                    } else {
+                        store.items[*idx].tags.extend(tags.clone());
+                        store.items[*idx].tags.sort();
+                        store.items[*idx].tags.dedup();
+                    }
                 }
                 tags_updated = true;
             }
 
+            if has_clear_note {
+                for idx in &indices {
+                    store.items[*idx].note = None;
+                }
+                note_updated = true;
+            } else if let Some(note) = args.note.as_deref() {
+                for idx in &indices {
+                    store.items[*idx].note = Some(note.to_string());
+                }
+                note_updated = true;
+            }
+
             save_store(&store_path, &store)?;
-            let item = &store.items[idx];
-            if alias_updated && tags_updated {
-                println!("Updated alias and tags for {}.", item.id);
-            } else if alias_updated {
-                println!(
-                    "Updated alias for {}: {}",
-                    item.id,
-                    item.alias.as_deref().unwrap_or("-")
-                );
-            } else if tags_updated {
-                let tags = if item.tags.is_empty() {
-                    "-".to_string()
+            if indices.len() > 1 {
+                println!("Updated {} favorites.", indices.len());
+            } else {
+                let item = &store.items[indices[0]];
+                let mut updated_fields = Vec::new();
+                if alias_updated {
+                    updated_fields.push("alias");
+                }
+                if tags_updated {
+                    updated_fields.push("tags");
+                }
+                if note_updated {
+                    updated_fields.push("note");
+                }
+                if updated_fields.len() == 1 && updated_fields[0] == "alias" {
+                    println!(
+                        "Updated alias for {}: {}",
+                        item.id,
+                        item.alias.as_deref().unwrap_or("-")
+                    );
+                } else if updated_fields.len() == 1 && updated_fields[0] == "tags" {
+                    let tags = if item.tags.is_empty() {
+                        "-".to_string()
+                    } else {
+                        item.tags.join(",")
+                    };
+                    println!("Updated tags for {}: {tags}", item.id);
+                } else if updated_fields.len() == 1 && updated_fields[0] == "note" {
+                    println!(
+                        "Updated note for {}: {}",
+                        item.id,
+                        item.note.as_deref().unwrap_or("-")
+                    );
                 } else {
-                    item.tags.join(",")
-                };
-                println!("Updated tags for {}: {tags}", item.id);
+                    println!("Updated {} for {}.", updated_fields.join(", "), item.id);
+                }
             }
         }
         Command::Pick(args) => {
             let filters = Filters {
                 search: args.search.clone(),
                 tags: args.tag.clone(),
+                query: args.query.as_deref().map(parse_query).transpose()?,
             };
             let opts = ListOptions {
                 format: OutputFormat::Plain,
                 path_format: args.display_path_format,
                 sort: args.sort,
                 reverse: args.reverse,
+                smart: args.smart,
+                show_notes: false,
             };
             let selection = pick_item(&store, &filters, &opts)?;
             if let Some(id) = selection {
@@ -587,14 +853,119 @@ fn main() -> Result<()> {
             mark_used(&mut store.items[idx]);
             let path = format_path(store.items[idx].path.as_str(), args.path_format)?;
             save_store(&store_path, &store)?;
-            run_with_command(&args.command, &path)?;
+            run_with_command(&args.command, &path, args.dry_run)?;
         }
         Command::Rm(args) => {
-            let idx = resolve_target_index(&store, &args.target)?;
-            store.items.remove(idx);
+            let indices =
+                resolve_target_indices(&store, args.target.as_deref(), args.query.as_deref())?;
+            if args.query.is_some() && !args.yes {
+                bail!("Use --yes with --query to remove matching favorites.");
+            }
+            let removed = indices.len();
+            for idx in indices.into_iter().rev() {
+                store.items.remove(idx);
+            }
             save_store(&store_path, &store)?;
-            println!("Removed favorite.");
+            if removed == 1 {
+                println!("Removed favorite.");
+            } else {
+                println!("Removed {removed} favorites.");
+            }
         }
+        Command::Shell(args) => match args.command {
+            ShellCommand::Init(args) => {
+                println!("{}", render_shell_init(args.shell));
+            }
+        },
+        Command::Open(args) => {
+            let idx = resolve_target_index(&store, &args.target)?;
+            let path = store.items[idx].path.clone();
+            if args.dry_run {
+                println!("{}", render_open_command(&path)?);
+            } else {
+                mark_used(&mut store.items[idx]);
+                save_store(&store_path, &store)?;
+                run_open_command(&path)?;
+            }
+        }
+        Command::Preset(args) => match args.command {
+            PresetCommand::Add(args) => {
+                validate_preset_name(&args.name)?;
+                ensure_unique_preset(&store, &args.name)?;
+                if args.command.is_empty() {
+                    bail!(
+                        "Provide a command after -- (example: fav preset add show -- printf %s {{}})"
+                    );
+                }
+                store.presets.push(Preset {
+                    name: args.name,
+                    command: args.command,
+                    note: args.note,
+                });
+                sync_store(&mut store);
+                save_store(&store_path, &store)?;
+                println!("Added preset.");
+            }
+            PresetCommand::List => {
+                for preset in &store.presets {
+                    println!(
+                        "{}\t{}\t{}",
+                        preset.name,
+                        preset.note.as_deref().unwrap_or("-"),
+                        render_command_line(&preset.command[0], &preset.command[1..])
+                    );
+                }
+            }
+            PresetCommand::Run(args) => {
+                let preset = find_preset(&store, &args.name)?.clone();
+                let idx = resolve_target_index(&store, &args.target)?;
+                let path = format_path(store.items[idx].path.as_str(), args.path_format)?;
+                if !args.dry_run {
+                    mark_used(&mut store.items[idx]);
+                    save_store(&store_path, &store)?;
+                }
+                run_with_command(&preset.command, &path, args.dry_run)?;
+            }
+            PresetCommand::Rm(args) => {
+                let before = store.presets.len();
+                store.presets.retain(|preset| preset.name != args.name);
+                if store.presets.len() == before {
+                    bail!("No preset named '{}'.", args.name);
+                }
+                save_store(&store_path, &store)?;
+                println!("Removed preset.");
+            }
+        },
+        Command::Doctor(args) => match args.command {
+            DoctorCommand::Duplicates => {
+                report_duplicates(&store)?;
+            }
+            DoctorCommand::Repair(args) => {
+                let repaired = repair_paths(&mut store, &args.from, &args.to, args.dry_run)?;
+                if !args.dry_run {
+                    save_store(&store_path, &store)?;
+                }
+                eprintln!("Repaired {} favorites.", repaired);
+            }
+        },
+        Command::Import(args) => match args.command {
+            ImportCommand::History(args) => {
+                let report = import_history(&mut store, &args)?;
+                save_store(&store_path, &store)?;
+                eprintln!(
+                    "Imported {} favorites (skipped {}).",
+                    report.added, report.skipped
+                );
+            }
+            ImportCommand::Paths(args) => {
+                let report = import_paths_file(&mut store, &args)?;
+                save_store(&store_path, &store)?;
+                eprintln!(
+                    "Imported {} favorites (skipped {}).",
+                    report.added, report.skipped
+                );
+            }
+        },
     }
 
     Ok(())
@@ -679,6 +1050,11 @@ fn is_reserved_word(value: &str) -> bool {
             | "remove"
             | "delete"
             | "del"
+            | "shell"
+            | "open"
+            | "preset"
+            | "doctor"
+            | "import"
             | "help"
             | "version"
     )
@@ -695,9 +1071,11 @@ fn load_store(store_path: &Path) -> Result<Store> {
                 path: seed_path,
                 alias: None,
                 tags: Vec::new(),
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         });
     }
 
@@ -730,7 +1108,7 @@ fn resolve_config_path(override_path: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn sync_store(store: &mut Store) {
-    if store.version == 0 {
+    if store.version < STORE_VERSION {
         store.version = STORE_VERSION;
     }
     let max_id = store.items.iter().map(|item| item.id).max().unwrap_or(0);
@@ -738,11 +1116,15 @@ fn sync_store(store: &mut Store) {
         store.next_id = max_id + 1;
     }
     store.items.sort_by_key(|item| item.id);
+    store
+        .presets
+        .sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 struct Filters {
     search: Option<String>,
     tags: Vec<String>,
+    query: Option<QuerySpec>,
 }
 
 struct ListOptions {
@@ -750,6 +1132,8 @@ struct ListOptions {
     path_format: PathFormat,
     sort: SortBy,
     reverse: bool,
+    smart: bool,
+    show_notes: bool,
 }
 
 #[derive(Serialize)]
@@ -758,13 +1142,21 @@ struct OutputItem {
     alias: Option<String>,
     path: String,
     tags: Vec<String>,
+    note: Option<String>,
     uses: u64,
     last_used: Option<i64>,
 }
 
 fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<usize> {
     let mut items = filtered_items(store, filters);
-    sort_items(&mut items, opts.sort, opts.reverse);
+    sort_items(
+        &mut items,
+        opts.sort,
+        opts.reverse,
+        filters,
+        opts.smart,
+        None,
+    );
     let count = items.len();
 
     match opts.format {
@@ -777,7 +1169,15 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
                     item.tags.join(",")
                 };
                 let path = format_path(item.path.as_str(), opts.path_format)?;
-                println!("{:>4}  {:<20}  {:<54}  {}", item.id, alias, path, tags);
+                if opts.show_notes {
+                    let note = item.note.as_deref().unwrap_or("-");
+                    println!(
+                        "{:>4}  {:<20}  {:<54}  {:<20}  {}",
+                        item.id, alias, path, tags, note
+                    );
+                } else {
+                    println!("{:>4}  {:<20}  {:<54}  {}", item.id, alias, path, tags);
+                }
             }
         }
         OutputFormat::Plain => {
@@ -789,7 +1189,18 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
                     item.tags.join(",")
                 };
                 let path = format_path(item.path.as_str(), opts.path_format)?;
-                println!("{}\t{}\t{}\t{}", item.id, alias, path, tags);
+                if opts.show_notes {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        item.id,
+                        alias,
+                        path,
+                        tags,
+                        item.note.as_deref().unwrap_or("-")
+                    );
+                } else {
+                    println!("{}\t{}\t{}\t{}", item.id, alias, path, tags);
+                }
             }
         }
         OutputFormat::Json => {
@@ -801,6 +1212,7 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
                     path: format_path(item.path.as_str(), opts.path_format)
                         .unwrap_or_else(|_| item.path.clone()),
                     tags: item.tags.clone(),
+                    note: item.note.clone(),
                     uses: item.uses,
                     last_used: item.last_used,
                 })
@@ -814,6 +1226,7 @@ fn list_items(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<us
 
 fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> {
     let query = filters.search.as_ref().map(|q| q.to_lowercase());
+    let duplicates = duplicate_index(store);
     store
         .items
         .iter()
@@ -828,7 +1241,12 @@ fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> 
                 }
             }
             if let Some(q) = query.as_ref()
-                && !matches_query(item, q)
+                && !matches_text_query(item, q)
+            {
+                return false;
+            }
+            if let Some(query) = filters.query.as_ref()
+                && !matches_query_spec(item, query, &duplicates)
             {
                 return false;
             }
@@ -837,18 +1255,41 @@ fn filtered_items<'a>(store: &'a Store, filters: &Filters) -> Vec<&'a Favorite> 
         .collect()
 }
 
-fn matches_query(item: &Favorite, query: &str) -> bool {
+fn matches_text_query(item: &Favorite, query: &str) -> bool {
     item.alias
         .as_ref()
         .is_some_and(|alias| alias.to_lowercase().contains(query))
         || item.path.to_lowercase().contains(query)
+        || item
+            .note
+            .as_ref()
+            .is_some_and(|note| note.to_lowercase().contains(query))
         || item
             .tags
             .iter()
             .any(|tag| tag.to_lowercase().contains(query))
 }
 
-fn sort_items(items: &mut Vec<&Favorite>, sort: SortBy, reverse: bool) {
+fn sort_items(
+    items: &mut Vec<&Favorite>,
+    sort: SortBy,
+    reverse: bool,
+    filters: &Filters,
+    smart: bool,
+    query_hint: Option<&str>,
+) {
+    if smart {
+        items.sort_by(|left, right| {
+            smart_score(right, filters, query_hint)
+                .cmp(&smart_score(left, filters, query_hint))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if reverse {
+            items.reverse();
+        }
+        return;
+    }
+
     match sort {
         SortBy::Id => items.sort_by_key(|item| item.id),
         SortBy::Alias => items.sort_by_key(|item| item.alias.clone().unwrap_or_default()),
@@ -860,6 +1301,249 @@ fn sort_items(items: &mut Vec<&Favorite>, sort: SortBy, reverse: bool) {
     let should_reverse = reverse || matches!(sort, SortBy::Recent | SortBy::Uses);
     if should_reverse {
         items.reverse();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QueryField {
+    Any,
+    Alias,
+    Path,
+    Tag,
+    Note,
+    Id,
+    Missing,
+    Dupe,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QueryTerm {
+    field: QueryField,
+    value: String,
+    negated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QuerySpec {
+    terms: Vec<QueryTerm>,
+}
+
+struct DuplicateIndex {
+    path_dupes: HashSet<String>,
+    alias_dupes: HashSet<String>,
+}
+
+fn parse_query(input: &str) -> Result<QuerySpec> {
+    let mut terms = Vec::new();
+    for raw_token in input.split_whitespace() {
+        let (negated, token) = if let Some(rest) = raw_token.strip_prefix('-') {
+            (true, rest)
+        } else {
+            (false, raw_token)
+        };
+        if token.is_empty() {
+            continue;
+        }
+
+        let (field, value) = if let Some((field, value)) = token.split_once(':') {
+            let field = match field.to_ascii_lowercase().as_str() {
+                "alias" => QueryField::Alias,
+                "path" => QueryField::Path,
+                "tag" => QueryField::Tag,
+                "note" => QueryField::Note,
+                "id" => QueryField::Id,
+                "missing" => QueryField::Missing,
+                "dupe" => QueryField::Dupe,
+                _ => bail!(
+                    "Unsupported query field '{field}'. Try alias:, path:, tag:, note:, id:, missing:, or dupe:."
+                ),
+            };
+            (field, value.trim().to_ascii_lowercase())
+        } else {
+            (QueryField::Any, token.trim().to_ascii_lowercase())
+        };
+
+        if value.is_empty() {
+            bail!("Query terms cannot be empty. Example: tag:work");
+        }
+
+        match field {
+            QueryField::Id => {
+                value
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid id query '{value}'. Example: id:3"))?;
+            }
+            QueryField::Missing | QueryField::Dupe => {
+                parse_bool_term(&value)?;
+            }
+            _ => {}
+        }
+
+        terms.push(QueryTerm {
+            field,
+            value,
+            negated,
+        });
+    }
+    Ok(QuerySpec { terms })
+}
+
+fn parse_bool_term(value: &str) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => bail!("Expected true or false, got '{value}'"),
+    }
+}
+
+fn duplicate_index(store: &Store) -> DuplicateIndex {
+    let mut path_counts: HashMap<String, usize> = HashMap::new();
+    let mut alias_counts: HashMap<String, usize> = HashMap::new();
+
+    for item in &store.items {
+        *path_counts.entry(item.path.clone()).or_default() += 1;
+        if let Some(alias) = item.alias.as_deref() {
+            *alias_counts.entry(normalize_alias_key(alias)).or_default() += 1;
+        }
+    }
+
+    DuplicateIndex {
+        path_dupes: path_counts
+            .into_iter()
+            .filter_map(|(path, count)| (count > 1).then_some(path))
+            .collect(),
+        alias_dupes: alias_counts
+            .into_iter()
+            .filter_map(|(alias, count)| (count > 1).then_some(alias))
+            .collect(),
+    }
+}
+
+fn normalize_alias_key(alias: &str) -> String {
+    alias
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+fn is_duplicate_item(item: &Favorite, duplicates: &DuplicateIndex) -> bool {
+    duplicates.path_dupes.contains(item.path.as_str())
+        || item
+            .alias
+            .as_deref()
+            .map(normalize_alias_key)
+            .is_some_and(|key| duplicates.alias_dupes.contains(&key))
+}
+
+fn matches_query_spec(item: &Favorite, query: &QuerySpec, duplicates: &DuplicateIndex) -> bool {
+    query.terms.iter().all(|term| {
+        let matched = match term.field {
+            QueryField::Any => matches_text_query(item, &term.value),
+            QueryField::Alias => item
+                .alias
+                .as_ref()
+                .is_some_and(|alias| alias.to_ascii_lowercase().contains(&term.value)),
+            QueryField::Path => item.path.to_ascii_lowercase().contains(&term.value),
+            QueryField::Tag => item
+                .tags
+                .iter()
+                .any(|tag| tag.to_ascii_lowercase().contains(&term.value)),
+            QueryField::Note => item
+                .note
+                .as_ref()
+                .is_some_and(|note| note.to_ascii_lowercase().contains(&term.value)),
+            QueryField::Id => item.id.to_string() == term.value,
+            QueryField::Missing => {
+                Path::new(item.path.as_str()).exists()
+                    != parse_bool_term(&term.value).unwrap_or(false)
+            }
+            QueryField::Dupe => {
+                is_duplicate_item(item, duplicates) == parse_bool_term(&term.value).unwrap_or(false)
+            }
+        };
+        if term.negated { !matched } else { matched }
+    })
+}
+
+fn smart_score(item: &Favorite, filters: &Filters, query_hint: Option<&str>) -> i64 {
+    let mut score = (item.uses as i64) * 20 + item.last_used.unwrap_or(0) / 86_400;
+
+    let mut needles: Vec<QueryTerm> = Vec::new();
+    if let Some(search) = filters.search.as_deref() {
+        needles.push(QueryTerm {
+            field: QueryField::Any,
+            value: search.to_ascii_lowercase(),
+            negated: false,
+        });
+    }
+    if let Some(hint) = query_hint {
+        needles.push(QueryTerm {
+            field: QueryField::Any,
+            value: hint.to_ascii_lowercase(),
+            negated: false,
+        });
+    }
+    if let Some(query) = filters.query.as_ref() {
+        needles.extend(
+            query
+                .terms
+                .iter()
+                .filter(|term| !term.negated)
+                .filter(|term| {
+                    !matches!(
+                        term.field,
+                        QueryField::Id | QueryField::Missing | QueryField::Dupe
+                    )
+                })
+                .cloned(),
+        );
+    }
+
+    for term in needles {
+        score += match term.field {
+            QueryField::Alias => rank_text(item.alias.as_deref(), &term.value, 1500),
+            QueryField::Path => rank_text(Some(item.path.as_str()), &term.value, 1300),
+            QueryField::Tag => item
+                .tags
+                .iter()
+                .map(|tag| rank_text(Some(tag.as_str()), &term.value, 1200))
+                .max()
+                .unwrap_or(0),
+            QueryField::Note => rank_text(item.note.as_deref(), &term.value, 1250),
+            QueryField::Any => [
+                rank_text(item.alias.as_deref(), &term.value, 2000),
+                rank_text(Some(item.path.as_str()), &term.value, 1500),
+                rank_text(item.note.as_deref(), &term.value, 1400),
+                item.tags
+                    .iter()
+                    .map(|tag| rank_text(Some(tag.as_str()), &term.value, 1200))
+                    .max()
+                    .unwrap_or(0),
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0),
+            QueryField::Id | QueryField::Missing | QueryField::Dupe => 0,
+        };
+    }
+
+    score
+}
+
+fn rank_text(candidate: Option<&str>, needle: &str, exact_bonus: i64) -> i64 {
+    let Some(candidate) = candidate else {
+        return 0;
+    };
+    let candidate = candidate.to_ascii_lowercase();
+    if candidate == needle {
+        exact_bonus
+    } else if candidate.starts_with(needle) {
+        exact_bonus - 400
+    } else if candidate.contains(needle) {
+        exact_bonus - 900
+    } else {
+        0
     }
 }
 
@@ -888,7 +1572,14 @@ fn parse_rename(value: &str) -> Result<(&str, &str)> {
 #[cfg(not(feature = "coverage"))]
 fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Option<u64>> {
     let mut items = filtered_items(store, filters);
-    sort_items(&mut items, opts.sort, opts.reverse);
+    sort_items(
+        &mut items,
+        opts.sort,
+        opts.reverse,
+        filters,
+        opts.smart,
+        None,
+    );
     if items.is_empty() {
         return Ok(None);
     }
@@ -931,7 +1622,14 @@ fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Opt
 #[cfg(feature = "coverage")]
 fn pick_item(store: &Store, filters: &Filters, opts: &ListOptions) -> Result<Option<u64>> {
     let mut items = filtered_items(store, filters);
-    sort_items(&mut items, opts.sort, opts.reverse);
+    sort_items(
+        &mut items,
+        opts.sort,
+        opts.reverse,
+        filters,
+        opts.smart,
+        None,
+    );
     Ok(items.first().map(|item| item.id))
 }
 
@@ -952,12 +1650,15 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let base_filters = Filters {
         search: args.search.clone(),
         tags: args.tag.clone(),
+        query: args.query.as_deref().map(parse_query).transpose()?,
     };
     let list_opts = ListOptions {
         format: OutputFormat::Plain,
         path_format: args.display_path_format,
         sort: args.sort,
         reverse: args.reverse,
+        smart: args.smart,
+        show_notes: false,
     };
 
     enable_raw_mode().context("enable raw mode")?;
@@ -974,9 +1675,16 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
         let mut items = filtered_items(store, &base_filters);
         if !filter.is_empty() {
             let filter_lower = filter.to_lowercase();
-            items.retain(|item| matches_query(item, filter_lower.as_str()));
+            items.retain(|item| matches_text_query(item, filter_lower.as_str()));
         }
-        sort_items(&mut items, list_opts.sort, list_opts.reverse);
+        sort_items(
+            &mut items,
+            list_opts.sort,
+            list_opts.reverse,
+            &base_filters,
+            true,
+            (!filter.is_empty()).then_some(filter.as_str()),
+        );
 
         if items.is_empty() {
             selected_index = 0;
@@ -1074,9 +1782,16 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
                     let mut items = filtered_items(store, &base_filters);
                     if !filter.is_empty() {
                         let filter_lower = filter.to_lowercase();
-                        items.retain(|item| matches_query(item, filter_lower.as_str()));
+                        items.retain(|item| matches_text_query(item, filter_lower.as_str()));
                     }
-                    sort_items(&mut items, list_opts.sort, list_opts.reverse);
+                    sort_items(
+                        &mut items,
+                        list_opts.sort,
+                        list_opts.reverse,
+                        &base_filters,
+                        true,
+                        (!filter.is_empty()).then_some(filter.as_str()),
+                    );
                     if items.is_empty() {
                         continue;
                     }
@@ -1098,15 +1813,25 @@ fn run_tui(store: &Store, args: &TuiArgs) -> Result<Option<u64>> {
     let filters = Filters {
         search: args.search.clone(),
         tags: args.tag.clone(),
+        query: args.query.as_deref().map(parse_query).transpose()?,
     };
     let opts = ListOptions {
         format: OutputFormat::Plain,
         path_format: args.display_path_format,
         sort: args.sort,
         reverse: args.reverse,
+        smart: args.smart,
+        show_notes: false,
     };
     let mut items = filtered_items(store, &filters);
-    sort_items(&mut items, opts.sort, opts.reverse);
+    sort_items(
+        &mut items,
+        opts.sort,
+        opts.reverse,
+        &filters,
+        opts.smart,
+        None,
+    );
     Ok(items.first().map(|item| item.id))
 }
 
@@ -1156,11 +1881,24 @@ fn merge_store(existing: &mut Store, mut imported: Store) -> Result<()> {
         .iter()
         .filter_map(|item| item.alias.clone())
         .collect();
+    let preset_names: HashSet<String> = existing
+        .presets
+        .iter()
+        .map(|preset| preset.name.clone())
+        .collect();
     for item in imported.items.iter() {
         if let Some(alias) = item.alias.as_ref()
             && aliases.iter().any(|a| a == alias)
         {
             bail!("Alias conflict during merge: {alias}. Rename it before importing.");
+        }
+    }
+    for preset in imported.presets.iter() {
+        if preset_names.contains(&preset.name) {
+            bail!(
+                "Preset conflict during merge: {}. Rename it before importing.",
+                preset.name
+            );
         }
     }
     let mut next_id = existing.next_id.max(1);
@@ -1169,6 +1907,7 @@ fn merge_store(existing: &mut Store, mut imported: Store) -> Result<()> {
         next_id += 1;
         existing.items.push(item);
     }
+    existing.presets.append(&mut imported.presets);
     existing.next_id = next_id;
     existing.items.sort_by_key(|item| item.id);
     Ok(())
@@ -1198,12 +1937,11 @@ fn prune_missing(store: &mut Store) -> Result<usize> {
     Ok(removed)
 }
 
-fn run_with_command(command: &[String], path: &str) -> Result<()> {
-    let mut cmd = ProcessCommand::new(
-        command
-            .first()
-            .context("Provide a command after -- (example: fav with <target> -- ls -la)")?,
-    );
+fn build_command_parts(command: &[String], path: &str) -> Result<(String, Vec<String>)> {
+    let program = command
+        .first()
+        .cloned()
+        .context("Provide a command after -- (example: fav with <target> -- ls -la)")?;
     let mut args: Vec<String> = Vec::new();
     let mut replaced = false;
     for arg in command.iter().skip(1) {
@@ -1217,9 +1955,470 @@ fn run_with_command(command: &[String], path: &str) -> Result<()> {
     if !replaced {
         args.push(path.to_string());
     }
+    Ok((program, args))
+}
+
+fn render_command_line(program: &str, args: &[String]) -> String {
+    std::iter::once(program.to_string())
+        .chain(args.iter().cloned())
+        .map(|part| shell_escape(&part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | ':' | '=' | '~')
+    }) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn run_with_command(command: &[String], path: &str, dry_run: bool) -> Result<()> {
+    let (program, args) = build_command_parts(command, path)?;
+    if dry_run {
+        println!("{}", render_command_line(&program, &args));
+        return Ok(());
+    }
+
+    let mut cmd = ProcessCommand::new(program);
     let status = cmd.args(args).status().context("run command")?;
     let code = status.code().unwrap_or(1);
     std::process::exit(code);
+}
+
+fn render_shell_init(shell: ShellKind) -> String {
+    match shell {
+        ShellKind::Zsh | ShellKind::Bash => r#"fcd() {
+  if [ "$#" -lt 1 ]; then
+    echo "usage: fcd <target>" >&2
+    return 1
+  fi
+  local dest
+  dest="$(fav get "$1")" || return $?
+  cd "$dest"
+}
+
+fopen() {
+  fav open "$@"
+}
+
+frun() {
+  if [ "$#" -lt 2 ]; then
+    echo "usage: frun <preset> <target>" >&2
+    return 1
+  fi
+  local preset="$1"
+  shift
+  fav preset run "$preset" "$@"
+}
+"#
+        .to_string(),
+        ShellKind::Fish => r#"function fcd
+    if test (count $argv) -lt 1
+        echo "usage: fcd <target>" >&2
+        return 1
+    end
+    set dest (fav get $argv[1]); or return $status
+    cd $dest
+end
+
+function fopen
+    fav open $argv
+end
+
+function frun
+    if test (count $argv) -lt 2
+        echo "usage: frun <preset> <target>" >&2
+        return 1
+    end
+    set preset $argv[1]
+    set -e argv[1]
+    fav preset run $preset $argv
+end
+"#
+        .to_string(),
+    }
+}
+
+fn opener_program() -> Result<&'static str> {
+    match env::consts::OS {
+        "macos" => Ok("open"),
+        "linux" => Ok("xdg-open"),
+        other => bail!("No supported opener for platform '{other}'."),
+    }
+}
+
+fn render_open_command(path: &str) -> Result<String> {
+    Ok(render_command_line(opener_program()?, &[path.to_string()]))
+}
+
+fn run_open_command(path: &str) -> Result<()> {
+    let status = ProcessCommand::new(opener_program()?)
+        .arg(path)
+        .status()
+        .context("run opener")?;
+    if !status.success() {
+        bail!("Open command failed for {path}");
+    }
+    Ok(())
+}
+
+fn validate_preset_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        bail!("Preset name cannot be empty");
+    }
+    Ok(())
+}
+
+fn ensure_unique_preset(store: &Store, name: &str) -> Result<()> {
+    if store.presets.iter().any(|preset| preset.name == name) {
+        bail!("Preset already exists: {name}");
+    }
+    Ok(())
+}
+
+fn find_preset<'a>(store: &'a Store, name: &str) -> Result<&'a Preset> {
+    store
+        .presets
+        .iter()
+        .find(|preset| preset.name == name)
+        .with_context(|| format!("No preset named '{name}'."))
+}
+
+fn report_duplicates(store: &Store) -> Result<()> {
+    let duplicates = duplicate_index(store);
+    for item in &store.items {
+        if duplicates.path_dupes.contains(item.path.as_str()) {
+            println!(
+                "path\t{}\t{}\t{}",
+                item.id,
+                item.alias.as_deref().unwrap_or("-"),
+                item.path
+            );
+        }
+        if item
+            .alias
+            .as_deref()
+            .map(normalize_alias_key)
+            .is_some_and(|alias| duplicates.alias_dupes.contains(&alias))
+        {
+            println!(
+                "alias\t{}\t{}\t{}",
+                item.id,
+                item.alias.as_deref().unwrap_or("-"),
+                item.path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn repair_paths(store: &mut Store, from: &Path, to: &Path, dry_run: bool) -> Result<usize> {
+    let from = expand_and_absolute(from)?;
+    let to = expand_and_absolute(to)?;
+    let mut repaired = 0;
+
+    for item in &mut store.items {
+        let path = PathBuf::from(&item.path);
+        if path.exists() {
+            continue;
+        }
+        if let Ok(suffix) = path.strip_prefix(&from) {
+            let candidate = to.join(suffix);
+            if candidate.exists() {
+                let repaired_path = candidate
+                    .canonicalize()
+                    .context("canonicalize repaired path")?;
+                println!("{}\t{}", item.path, repaired_path.to_string_lossy());
+                if !dry_run {
+                    item.path = repaired_path.to_string_lossy().to_string();
+                }
+                repaired += 1;
+            }
+        }
+    }
+
+    Ok(repaired)
+}
+
+struct ImportReport {
+    added: usize,
+    skipped: usize,
+}
+
+fn import_history(store: &mut Store, args: &ImportHistoryArgs) -> Result<ImportReport> {
+    let (shell, data) = resolve_history_source(args)?;
+    let mut commands = extract_history_commands(&data, shell);
+    if let Some(limit) = args.limit {
+        commands = commands.into_iter().rev().take(limit).collect::<Vec<_>>();
+        commands.reverse();
+    }
+    let paths = commands
+        .into_iter()
+        .flat_map(|command| extract_paths_from_command(&command))
+        .collect::<Vec<_>>();
+    import_paths(
+        store,
+        paths,
+        &normalize_tags(args.tag.clone()),
+        args.note.as_deref(),
+    )
+}
+
+fn import_paths_file(store: &mut Store, args: &ImportPathsArgs) -> Result<ImportReport> {
+    let data = read_optional_file_or_stdin(args.file.as_deref())?;
+    let paths = parse_path_input(&data)?;
+    import_paths(
+        store,
+        paths,
+        &normalize_tags(args.tag.clone()),
+        args.note.as_deref(),
+    )
+}
+
+fn import_paths(
+    store: &mut Store,
+    raw_paths: Vec<String>,
+    tags: &[String],
+    note: Option<&str>,
+) -> Result<ImportReport> {
+    let mut report = ImportReport {
+        added: 0,
+        skipped: 0,
+    };
+    let mut seen = HashSet::new();
+
+    for raw_path in raw_paths {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            report.skipped += 1;
+            continue;
+        }
+        if add_imported_path(store, trimmed, tags, note)? {
+            report.added += 1;
+        } else {
+            report.skipped += 1;
+        }
+    }
+
+    sync_store(store);
+    Ok(report)
+}
+
+fn add_imported_path(
+    store: &mut Store,
+    raw_path: &str,
+    tags: &[String],
+    note: Option<&str>,
+) -> Result<bool> {
+    let normalized = match normalize_path(Path::new(raw_path)) {
+        Ok(path) => path,
+        Err(_) => return Ok(false),
+    };
+    let normalized = normalized.to_string_lossy().to_string();
+    if store.items.iter().any(|item| item.path == normalized) {
+        return Ok(false);
+    }
+
+    let id = store.next_id.max(1);
+    store.next_id = id + 1;
+    store.items.push(Favorite {
+        id,
+        path: normalized,
+        alias: None,
+        tags: tags.to_vec(),
+        note: note.map(str::to_string),
+        uses: 0,
+        last_used: None,
+    });
+    Ok(true)
+}
+
+fn read_optional_file_or_stdin(file: Option<&Path>) -> Result<String> {
+    let mut data = String::new();
+    match file {
+        Some(path) => {
+            data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        }
+        None => {
+            io::stdin()
+                .read_to_string(&mut data)
+                .context("read stdin")?;
+        }
+    }
+    if data.trim().is_empty() {
+        bail!("No input provided. Use --file <path> or pipe data to stdin.");
+    }
+    Ok(data)
+}
+
+fn resolve_history_source(args: &ImportHistoryArgs) -> Result<(HistoryShell, String)> {
+    if let Some(path) = args.file.as_deref() {
+        let data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let shell = if args.shell == HistoryShell::Auto {
+            detect_history_shell(Some(path), &data)
+        } else {
+            args.shell
+        };
+        return Ok((shell, data));
+    }
+
+    let user_dirs = UserDirs::new().context("resolve home directory")?;
+    let home = user_dirs.home_dir();
+    let candidates = match args.shell {
+        HistoryShell::Auto => vec![
+            (HistoryShell::Zsh, home.join(".zsh_history")),
+            (HistoryShell::Bash, home.join(".bash_history")),
+            (
+                HistoryShell::Fish,
+                home.join(".local/share/fish/fish_history"),
+            ),
+        ],
+        HistoryShell::Zsh => vec![(HistoryShell::Zsh, home.join(".zsh_history"))],
+        HistoryShell::Bash => vec![(HistoryShell::Bash, home.join(".bash_history"))],
+        HistoryShell::Fish => vec![(
+            HistoryShell::Fish,
+            home.join(".local/share/fish/fish_history"),
+        )],
+    };
+
+    for (shell, path) in candidates {
+        if path.exists() {
+            let data =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+            return Ok((shell, data));
+        }
+    }
+
+    bail!("Could not find a shell history file. Use --file to point at one.");
+}
+
+fn detect_history_shell(path: Option<&Path>, data: &str) -> HistoryShell {
+    if let Some(path) = path
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+    {
+        let lower = path.to_ascii_lowercase();
+        if lower.contains("zsh") {
+            return HistoryShell::Zsh;
+        }
+        if lower.contains("fish") {
+            return HistoryShell::Fish;
+        }
+        if lower.contains("bash") {
+            return HistoryShell::Bash;
+        }
+    }
+    if data.lines().any(|line| line.starts_with(": ")) {
+        HistoryShell::Zsh
+    } else if data
+        .lines()
+        .any(|line| line.trim_start().starts_with("- cmd:"))
+    {
+        HistoryShell::Fish
+    } else {
+        HistoryShell::Bash
+    }
+}
+
+fn extract_history_commands(data: &str, shell: HistoryShell) -> Vec<String> {
+    data.lines()
+        .filter_map(|line| match shell {
+            HistoryShell::Auto => None,
+            HistoryShell::Zsh => line.split_once(';').map(|(_, command)| command.to_string()),
+            HistoryShell::Bash => Some(line.to_string()),
+            HistoryShell::Fish => line
+                .trim_start()
+                .strip_prefix("- cmd:")
+                .map(|command| command.trim().to_string()),
+        })
+        .collect()
+}
+
+fn extract_paths_from_command(command: &str) -> Vec<String> {
+    let tokens = split_command_tokens(command);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    if tokens[0] == "cd" && tokens.len() > 1 {
+        return vec![tokens[1].clone()];
+    }
+    tokens
+        .into_iter()
+        .filter(|token| looks_like_path(token))
+        .collect()
+}
+
+fn split_command_tokens(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+
+    for ch in command.chars() {
+        match (quote, ch) {
+            (Some(active), c) if c == active => quote = None,
+            (Some(_), c) => current.push(c),
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, c) if c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            (None, c) => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn looks_like_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("~/")
+        || value.starts_with("./")
+        || value.starts_with("../")
+}
+
+fn parse_path_input(data: &str) -> Result<Vec<String>> {
+    if let Ok(paths) = serde_json::from_str::<Vec<String>>(data) {
+        return Ok(paths);
+    }
+    if data.contains("HREF=\"file://") || data.contains("href=\"file://") {
+        return Ok(extract_bookmark_paths(data));
+    }
+
+    let mut paths = Vec::new();
+    for line in data.lines() {
+        for cell in line.split(',') {
+            let trimmed = cell.trim().trim_matches('"').trim_matches('\'');
+            if !trimmed.is_empty() {
+                paths.push(trimmed.to_string());
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn extract_bookmark_paths(data: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for marker in ["HREF=\"file://", "href=\"file://"] {
+        for segment in data.split(marker).skip(1) {
+            if let Some((value, _)) = segment.split_once('"') {
+                paths.push(decode_file_url(value));
+            }
+        }
+    }
+    paths
+}
+
+fn decode_file_url(value: &str) -> String {
+    let path = value.trim_start_matches('/');
+    format!("/{}", path.replace("%20", " "))
 }
 
 #[cfg(test)]
@@ -1239,6 +2438,7 @@ mod tests {
                     path: "/tmp/alpha".to_string(),
                     alias: Some("alpha".to_string()),
                     tags: vec!["work".to_string(), "notes".to_string()],
+                    note: None,
                     uses: 2,
                     last_used: Some(100),
                 },
@@ -1247,6 +2447,7 @@ mod tests {
                     path: "/var/log/syslog".to_string(),
                     alias: None,
                     tags: vec!["ops".to_string()],
+                    note: None,
                     uses: 5,
                     last_used: Some(200),
                 },
@@ -1255,10 +2456,12 @@ mod tests {
                     path: "/home/user/docs".to_string(),
                     alias: Some("docs".to_string()),
                     tags: vec!["work".to_string()],
+                    note: Some("Project notes".to_string()),
                     uses: 1,
                     last_used: Some(50),
                 },
             ],
+            presets: Vec::new(),
         }
     }
 
@@ -1268,6 +2471,7 @@ mod tests {
         let filters = Filters {
             search: None,
             tags: vec!["work".to_string()],
+            query: None,
         };
         let items = filtered_items(&store, &filters);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
@@ -1280,6 +2484,7 @@ mod tests {
         let filters = Filters {
             search: Some("sys".to_string()),
             tags: Vec::new(),
+            query: None,
         };
         let items = filtered_items(&store, &filters);
         assert_eq!(items.len(), 1);
@@ -1287,10 +2492,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_query_supports_free_text_fields_and_negation() {
+        let query = parse_query("docs tag:work -tag:notes note:project id:3").expect("parse");
+        assert_eq!(query.terms.len(), 5);
+        assert_eq!(query.terms[0].value, "docs");
+        assert_eq!(query.terms[1].field, QueryField::Tag);
+        assert!(query.terms[2].negated);
+        assert_eq!(query.terms[3].field, QueryField::Note);
+        assert_eq!(query.terms[4].field, QueryField::Id);
+    }
+
+    #[test]
+    fn filters_by_structured_query() {
+        let store = sample_store();
+        let filters = Filters {
+            search: None,
+            tags: Vec::new(),
+            query: Some(parse_query("tag:work note:project").expect("query")),
+        };
+        let items = filtered_items(&store, &filters);
+        let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
+        assert_eq!(ids, vec![3]);
+    }
+
+    #[test]
+    fn smart_sort_prefers_exact_alias_matches() {
+        let store = sample_store();
+        let filters = Filters {
+            search: Some("docs".to_string()),
+            tags: Vec::new(),
+            query: None,
+        };
+        let mut items: Vec<&Favorite> = store.items.iter().collect();
+        sort_items(&mut items, SortBy::Id, false, &filters, true, None);
+        let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
+        assert_eq!(ids[0], 3);
+    }
+
+    #[test]
     fn sort_by_recent_desc() {
         let store = sample_store();
         let mut items: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut items, SortBy::Recent, false);
+        let filters = Filters {
+            search: None,
+            tags: Vec::new(),
+            query: None,
+        };
+        sort_items(&mut items, SortBy::Recent, false, &filters, false, None);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![2, 1, 3]);
     }
@@ -1299,7 +2547,12 @@ mod tests {
     fn sort_by_alias_asc() {
         let store = sample_store();
         let mut items: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut items, SortBy::Alias, false);
+        let filters = Filters {
+            search: None,
+            tags: Vec::new(),
+            query: None,
+        };
+        sort_items(&mut items, SortBy::Alias, false, &filters, false, None);
         let ids: Vec<u64> = items.into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![2, 1, 3]);
     }
@@ -1333,9 +2586,11 @@ mod tests {
                 path: "/tmp/x".to_string(),
                 alias: None,
                 tags: Vec::new(),
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         };
         sync_store(&mut store);
         assert_eq!(store.version, STORE_VERSION);
@@ -1353,9 +2608,11 @@ mod tests {
                 path: "/tmp/other".to_string(),
                 alias: Some("unique".to_string()),
                 tags: vec!["x".to_string()],
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         };
         merge_store(&mut existing, imported).expect("merge");
         assert_eq!(existing.items.len(), 4);
@@ -1373,9 +2630,11 @@ mod tests {
                 path: "/tmp/other".to_string(),
                 alias: Some("alpha".to_string()),
                 tags: vec!["x".to_string()],
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         };
         assert!(merge_store(&mut existing, imported).is_err());
     }
@@ -1391,14 +2650,45 @@ mod tests {
     }
 
     #[test]
+    fn old_store_json_loads_defaults_for_notes_and_presets() {
+        let data = r#"{
+            "version": 1,
+            "next_id": 2,
+            "items": [
+                {
+                    "id": 1,
+                    "path": "/tmp/alpha",
+                    "alias": "alpha",
+                    "tags": ["work"],
+                    "uses": 0,
+                    "last_used": null
+                }
+            ]
+        }"#;
+
+        let store: Store = serde_json::from_str(data).expect("parse");
+        assert!(store.presets.is_empty());
+        assert!(store.items[0].note.is_none());
+    }
+
+    #[test]
     fn save_and_load_store_roundtrip() {
         let dir = tempdir().expect("tempdir");
         let config = dir.path().join("nested/fav.json");
-        let store = sample_store();
+        let mut store = sample_store();
+        store.items[0].note = Some("Primary work tree".to_string());
+        store.presets.push(Preset {
+            name: "show".to_string(),
+            command: vec!["printf".to_string(), "%s".to_string(), "{}".to_string()],
+            note: Some("Minimal smoke test preset".to_string()),
+        });
         save_store(&config, &store).expect("save");
         let loaded = load_store(&config).expect("load");
         assert_eq!(loaded.items.len(), store.items.len());
         assert_eq!(loaded.items[0].path, store.items[0].path);
+        assert_eq!(loaded.items[0].note, store.items[0].note);
+        assert_eq!(loaded.presets.len(), 1);
+        assert_eq!(loaded.presets[0].name, "show");
     }
 
     #[test]
@@ -1481,9 +2771,11 @@ mod tests {
                 path: canonical.to_string_lossy().to_string(),
                 alias: Some("alpha".to_string()),
                 tags: Vec::new(),
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         };
         assert_eq!(resolve_target_index(&store, "1").expect("id"), 0);
         assert_eq!(resolve_target_index(&store, "alpha").expect("alias"), 0);
@@ -1513,16 +2805,21 @@ mod tests {
         let store = sample_store();
 
         let mut by_path: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut by_path, SortBy::Path, false);
+        let filters = Filters {
+            search: None,
+            tags: Vec::new(),
+            query: None,
+        };
+        sort_items(&mut by_path, SortBy::Path, false, &filters, false, None);
         let path_ids: Vec<u64> = by_path.iter().map(|item| item.id).collect();
         assert_eq!(path_ids, vec![3, 1, 2]);
 
         let mut by_tag: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut by_tag, SortBy::Tag, false);
+        sort_items(&mut by_tag, SortBy::Tag, false, &filters, false, None);
         assert_eq!(by_tag.first().unwrap().id, 2);
 
         let mut by_uses: Vec<&Favorite> = store.items.iter().collect();
-        sort_items(&mut by_uses, SortBy::Uses, false);
+        sort_items(&mut by_uses, SortBy::Uses, false, &filters, false, None);
         let uses_ids: Vec<u64> = by_uses.iter().map(|item| item.id).collect();
         assert_eq!(uses_ids, vec![2, 1, 3]);
     }
@@ -1539,9 +2836,11 @@ mod tests {
                 path: "/tmp/fav-alpha".to_string(),
                 alias: Some("alpha".to_string()),
                 tags: Vec::new(),
+                note: None,
                 uses: 0,
                 last_used: None,
             }],
+            presets: Vec::new(),
         };
         save_store(&config, &store).expect("save");
 
@@ -1624,6 +2923,38 @@ fn resolve_target_index(store: &Store, target: &str) -> Result<usize> {
     )
 }
 
+fn resolve_target_indices(
+    store: &Store,
+    target: Option<&str>,
+    query: Option<&str>,
+) -> Result<Vec<usize>> {
+    match (target, query) {
+        (Some(target), None) => Ok(vec![resolve_target_index(store, target)?]),
+        (None, Some(query)) => {
+            let filters = Filters {
+                search: None,
+                tags: Vec::new(),
+                query: Some(parse_query(query)?),
+            };
+            let matched_ids: Vec<u64> = filtered_items(store, &filters)
+                .into_iter()
+                .map(|item| item.id)
+                .collect();
+            if matched_ids.is_empty() {
+                bail!("No favorites matched query '{query}'.");
+            }
+            let mut indices = matched_ids
+                .into_iter()
+                .filter_map(|id| store.items.iter().position(|item| item.id == id))
+                .collect::<Vec<_>>();
+            indices.sort_unstable();
+            Ok(indices)
+        }
+        (Some(_), Some(_)) => bail!("Choose only one of: target or --query"),
+        (None, None) => bail!("Provide a target or --query. See `fav --help`."),
+    }
+}
+
 fn validate_alias(alias: &str) -> Result<()> {
     if alias.trim().is_empty() {
         bail!("Alias cannot be empty");
@@ -1642,6 +2973,18 @@ fn ensure_unique_alias(store: &Store, alias: &str) -> Result<()> {
         .items
         .iter()
         .any(|item| item.alias.as_deref() == Some(alias))
+    {
+        bail!("Alias already in use: {alias}");
+    }
+    Ok(())
+}
+
+fn ensure_unique_alias_except(store: &Store, alias: &str, except_idx: usize) -> Result<()> {
+    if store
+        .items
+        .iter()
+        .enumerate()
+        .any(|(idx, item)| idx != except_idx && item.alias.as_deref() == Some(alias))
     {
         bail!("Alias already in use: {alias}");
     }
