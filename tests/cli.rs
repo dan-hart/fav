@@ -302,12 +302,18 @@ fn concurrent_additions_do_not_lose_updates() {
                 .arg(path)
                 .arg("--json")
                 .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .spawn()
                 .unwrap(),
         );
     }
-    for mut child in children {
-        assert!(child.wait().unwrap().success());
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     assert_eq!(list_json(&config).len(), 13);
     assert!(!config.with_extension("json.tmp").exists());
@@ -931,7 +937,7 @@ fn doctor_duplicates_and_repair_dry_run_work() {
         &config,
     );
     assert!(repair.contains("moved"));
-    assert!(repair.contains(new_file.to_string_lossy().as_ref()));
+    assert!(repair.contains(new_file.canonicalize().unwrap().to_string_lossy().as_ref()));
 }
 
 #[test]
