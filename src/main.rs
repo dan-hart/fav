@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 #[cfg(not(feature = "coverage"))]
@@ -11,7 +11,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 #[cfg(not(feature = "coverage"))]
 use crossterm::{
     cursor::{Hide, Show},
@@ -31,6 +31,16 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 
+mod automation;
+
+// Route human output through the response collector when --json is enabled.
+macro_rules! println {
+    ($($arg:tt)*) => { automation::line(format!($($arg)*)) };
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => { automation::warning(format!($($arg)*)) };
+}
+
 const STORE_VERSION: u32 = 2;
 
 #[derive(Parser)]
@@ -43,6 +53,15 @@ Use numeric ids (speed-dial) or aliases to print paths quickly.\n\
 Examples:\n  fav add\n  fav add ~/dotfiles --alias dotfiles --tag config\n  fav list --tag work --sort uses\n  fav list --search notes --format json\n  fav 1\n  fav my-config\n  fav with dotfiles -- rg \"TODO\" {}\n"
 )]
 struct Cli {
+    /// Emit a versioned JSON response (including structured errors)
+    #[arg(long, global = true)]
+    json: bool,
+    /// Refuse interactive selection and terminal stdin reads
+    #[arg(long, global = true)]
+    non_interactive: bool,
+    /// Preview changes without saving or executing commands
+    #[arg(long, global = true)]
+    dry_run: bool,
     /// Path to the favorites config (defaults to ~/.fav.config)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -52,6 +71,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(
+        about = "Describe commands and response contracts as JSON",
+        after_help = "Example: fav schema"
+    )]
+    Schema,
+    #[command(
+        about = "Ensure a path is favorited; update only supplied metadata",
+        after_help = "Example: fav ensure ./project --alias project --tag active --json"
+    )]
+    Ensure(AddArgs),
+    #[command(
+        about = "Resolve a favorite without updating usage",
+        after_help = "Example: fav resolve project --json"
+    )]
+    Resolve(GetArgs),
     #[command(
         about = "Add a favorite",
         long_about = "Add a favorite file or directory.\n\
@@ -78,7 +112,7 @@ Examples:\n  fav get 1\n  fav get dotfiles\n  cd \"$(fav get dotfiles)\"\n  fav 
         about = "Update metadata",
         long_about = "Update alias or tags for a favorite.\n\
 The target can be an id, alias, or path.\n\
-Examples:\n  fav meta 1 --alias dotfiles\n  fav meta 1 --clear-alias\n  fav meta 1 --tag work,urgent\n  fav meta 1 --set-tags work,urgent\n  fav meta 1 --rm-tag urgent\n  fav meta 1 --rename-tag old=new\n"
+Examples:\n  fav meta 1 --alias dotfiles\n  fav meta 1 --clear-alias\n  fav meta 1 --tag work,urgent\n  fav meta 1 --set-tags --tag work,urgent\n  fav meta 1 --rm-tag urgent\n  fav meta 1 --rename-tag old=new\n"
     )]
     Meta(MetaArgs),
     #[command(
@@ -123,15 +157,30 @@ Examples:\n  fav with my-config -- cat\n  fav with 3 -- ls -la {}\n  fav with no
 Examples:\n  fav rm 1\n  fav rm dotfiles\n  fav rm ~/dotfiles\n  fav rm ./notes/todo.md\n"
     )]
     Rm(RemoveArgs),
-    #[command(about = "Generate shell helpers")]
+    #[command(
+        about = "Generate shell helpers",
+        after_help = "Example: eval \"$(fav shell init zsh)\""
+    )]
     Shell(ShellArgs),
-    #[command(about = "Open a favorite with the system opener")]
+    #[command(
+        about = "Open a favorite with the system opener",
+        after_help = "Example: fav open project --dry-run"
+    )]
     Open(OpenArgs),
-    #[command(about = "Manage reusable command presets")]
+    #[command(
+        about = "Manage reusable command presets",
+        after_help = "Example: fav preset add search -- rg TODO {}"
+    )]
     Preset(PresetArgs),
-    #[command(about = "Inspect duplicates or repair paths")]
+    #[command(
+        about = "Inspect duplicates or repair paths",
+        after_help = "Example: fav doctor repair --from ~/old --to ~/new --dry-run"
+    )]
     Doctor(DoctorArgs),
-    #[command(about = "Import favorites from shell history or path files")]
+    #[command(
+        about = "Import favorites from shell history or path files",
+        after_help = "Example: fav import paths --file paths.json --dry-run"
+    )]
     Import(ImportArgs),
 }
 
@@ -186,6 +235,9 @@ struct ListArgs {
 
 #[derive(Args)]
 struct GetArgs {
+    /// Resolve without modifying usage counters or timestamps
+    #[arg(long)]
+    no_touch: bool,
     /// Target id or alias
     target: String,
     /// How to render paths
@@ -318,9 +370,6 @@ struct WithArgs {
     /// Command to run (use -- to separate)
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
-    /// Print the resolved command instead of running it
-    #[arg(long)]
-    dry_run: bool,
     /// How to render paths
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
@@ -346,19 +395,23 @@ struct ShellArgs {
 
 #[derive(Subcommand)]
 enum ShellCommand {
+    #[command(
+        about = "Print shell functions for the selected shell",
+        after_help = "Examples: fav shell init bash; fav shell init fish"
+    )]
     Init(ShellInitArgs),
 }
 
 #[derive(Args)]
 struct ShellInitArgs {
+    /// Shell syntax to generate (requires the corresponding shell)
     shell: ShellKind,
 }
 
 #[derive(Args)]
 struct OpenArgs {
+    /// Favorite id, alias, or stored path
     target: String,
-    #[arg(long)]
-    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -369,33 +422,54 @@ struct PresetArgs {
 
 #[derive(Subcommand)]
 enum PresetCommand {
+    #[command(
+        about = "Save a command template",
+        after_help = "Example: fav preset add search -- rg TODO {}"
+    )]
     Add(PresetAddArgs),
+    #[command(
+        about = "List templates in name order",
+        after_help = "Example: fav preset list --json"
+    )]
     List,
+    #[command(
+        about = "Execute a template using a favorite",
+        after_help = "Example: fav preset run search project --dry-run"
+    )]
     Run(PresetRunArgs),
+    #[command(
+        about = "Remove a saved template",
+        after_help = "Example: fav preset rm search --dry-run"
+    )]
     Rm(PresetRemoveArgs),
 }
 
 #[derive(Args)]
 struct PresetAddArgs {
+    /// Unique template name
     name: String,
+    /// Optional description
     #[arg(long)]
     note: Option<String>,
+    /// Command tokens after --; {} is replaced with the favorite path
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
 
 #[derive(Args)]
 struct PresetRunArgs {
+    /// Saved template name
     name: String,
+    /// Favorite id, alias, or path
     target: String,
-    #[arg(long)]
-    dry_run: bool,
+    /// Path representation passed to the child process
     #[arg(long, value_enum, default_value = "absolute")]
     path_format: PathFormat,
 }
 
 #[derive(Args)]
 struct PresetRemoveArgs {
+    /// Saved template name
     name: String,
 }
 
@@ -407,18 +481,26 @@ struct DoctorArgs {
 
 #[derive(Subcommand)]
 enum DoctorCommand {
+    #[command(
+        about = "Report duplicate paths and normalized alias collisions",
+        after_help = "Example: fav doctor duplicates --json"
+    )]
     Duplicates,
+    #[command(
+        about = "Repair missing paths by replacing a root prefix",
+        after_help = "Example: fav doctor repair --from ~/old --to ~/new --dry-run"
+    )]
     Repair(DoctorRepairArgs),
 }
 
 #[derive(Args)]
 struct DoctorRepairArgs {
+    /// Old path root to replace
     #[arg(long)]
     from: PathBuf,
+    /// New root; replacements must exist
     #[arg(long)]
     to: PathBuf,
-    #[arg(long)]
-    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -429,30 +511,46 @@ struct ImportArgs {
 
 #[derive(Subcommand)]
 enum ImportCommand {
+    #[command(
+        about = "Import existing paths found in shell history",
+        after_help = "Example: fav import history --shell zsh --limit 50 --dry-run"
+    )]
     History(ImportHistoryArgs),
+    #[command(
+        about = "Import newline, CSV, or JSON paths",
+        after_help = "Example: fav import paths --file paths.json --tag imported --dry-run"
+    )]
     Paths(ImportPathsArgs),
 }
 
 #[derive(Args)]
 struct ImportHistoryArgs {
+    /// History syntax; auto examines filenames and contents
     #[arg(long, value_enum, default_value = "auto")]
     shell: HistoryShell,
+    /// History file (otherwise search the user's home directory)
     #[arg(long)]
     file: Option<PathBuf>,
+    /// Maximum number of recent commands to inspect
     #[arg(long)]
     limit: Option<usize>,
+    /// Tags attached to imported favorites
     #[arg(long, value_delimiter = ',')]
     tag: Vec<String>,
+    /// Note attached to imported favorites
     #[arg(long)]
     note: Option<String>,
 }
 
 #[derive(Args)]
 struct ImportPathsArgs {
+    /// Input file (otherwise read stdin)
     #[arg(long)]
     file: Option<PathBuf>,
+    /// Tags attached to imported favorites
     #[arg(long, value_delimiter = ',')]
     tag: Vec<String>,
+    /// Note attached to imported favorites
     #[arg(long)]
     note: Option<String>,
 }
@@ -528,17 +626,136 @@ struct Favorite {
     last_used: Option<i64>,
 }
 
-fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
+fn main() {
+    let mut args: Vec<String> = env::args().collect();
+    let flags: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .map(String::as_str)
+        .collect();
+    automation::init(flags.contains(&"--json"), flags.contains(&"--dry-run"));
+    // Keep the speed-dial shortcut, including global flags, on the same execution path.
+    let mut skip = false;
+    for index in 1..args.len() {
+        if args[index] == "--" {
+            break;
+        }
+        if skip {
+            skip = false;
+            continue;
+        }
+        if args[index] == "--config" {
+            skip = true;
+            continue;
+        }
+        if args[index].starts_with('-') {
+            continue;
+        }
+        if !is_reserved_word(&args[index]) {
+            args.insert(index, "get".to_string());
+        }
+        break;
+    }
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                print!("{error}");
+                return;
+            }
+            let failure = automation::Failure {
+                code: "invalid_arguments",
+                exit: 2,
+                message: error.to_string(),
+            };
+            std::process::exit(automation::error(&failure.into()));
+        }
+    };
+    let command_name = match &cli.command {
+        None | Some(Command::List(_)) => "list",
+        Some(Command::Add(_)) => "add",
+        Some(Command::Ensure(_)) => "ensure",
+        Some(Command::Get(_)) => "get",
+        Some(Command::Resolve(_)) => "resolve",
+        Some(Command::Schema) => "schema",
+        Some(Command::Meta(_)) => "meta",
+        Some(Command::Rm(_)) => "rm",
+        Some(Command::Io(_)) => "io",
+        Some(Command::Health(_)) => "health",
+        Some(Command::Pick(_)) => "pick",
+        Some(Command::Tui(_)) => "tui",
+        Some(Command::With(_)) => "with",
+        Some(Command::Shell(_)) => "shell",
+        Some(Command::Open(_)) => "open",
+        Some(Command::Preset(_)) => "preset",
+        Some(Command::Doctor(_)) => "doctor",
+        Some(Command::Import(_)) => "import",
+    };
+    if let Err(error) = run_cli(cli) {
+        std::process::exit(automation::error(&error));
+    }
+    automation::finish(command_name);
+}
 
-    if let Some(result) = try_handle_alias_or_get(&args)? {
-        println!("{result}");
+fn command_schema(command: &clap::Command) -> serde_json::Value {
+    serde_json::json!({
+        "name": command.get_name(),
+        "aliases": command.get_all_aliases().collect::<Vec<_>>(),
+        "description": command.get_about().map(ToString::to_string),
+        "help": command.clone().render_long_help().to_string(),
+        "arguments": command.get_arguments().map(|arg| serde_json::json!({
+            "name": arg.get_id().as_str(), "long": arg.get_long(), "short": arg.get_short(),
+            "required": arg.is_required_set(), "global": arg.is_global_set(),
+            "help": arg.get_help().map(ToString::to_string),
+            "action": format!("{:?}", arg.get_action()),
+            "values": arg.get_value_parser().possible_values().map(|values| values.map(|value| value.get_name().to_string()).collect::<Vec<_>>()),
+            "defaults": arg.get_default_values().iter().map(|v| v.to_string_lossy()).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "commands": command.get_subcommands().map(command_schema).collect::<Vec<_>>()
+    })
+}
+
+fn run_cli(cli: Cli) -> Result<()> {
+    if matches!(cli.command, Some(Command::Schema)) {
+        let mut command = Cli::command();
+        command.build();
+        let schema = serde_json::json!({"schema_version": 1, "version": env!("CARGO_PKG_VERSION"),
+            "cli": command_schema(&command), "response": {"schema_version": 1, "ok": "boolean", "command": "canonical top-level command", "dry_run": "boolean", "data": "command-specific JSON", "items": "changed favorites", "changes": "id/before/after objects", "presets": "resulting presets", "changed_ids": "sorted ids", "output": "text lines", "warnings": "array"},
+            "exit_codes": {"0": "success", "2": "invalid input", "3": "not found", "4": "conflict", "5": "busy", "6": "storage", "7": "execution failed"}});
+        if cli.json {
+            automation::data(schema);
+        } else {
+            std::println!("{schema}");
+        }
         return Ok(());
     }
-
-    let cli = Cli::parse();
     let store_path = resolve_config_path(cli.config.as_deref())?;
+    let stdin_required = matches!(
+        &cli.command,
+        Some(Command::Io(IoArgs {
+            import: true,
+            file: None,
+            ..
+        })) | Some(Command::Import(ImportArgs {
+            command: ImportCommand::Paths(ImportPathsArgs { file: None, .. })
+        }))
+    );
+    if (cli.non_interactive || cli.json) && stdin_required && io::stdin().is_terminal() {
+        bail!("Terminal stdin is disabled; supply --file or pipe input.");
+    }
+    automation::lock(&store_path)?;
     let mut store = load_store(&store_path)?;
+    automation::before(serde_json::to_value(&store)?);
+    let dry_run = cli.dry_run;
+    if (cli.non_interactive || cli.json || cli.dry_run)
+        && matches!(cli.command, Some(Command::Pick(_) | Command::Tui(_)))
+    {
+        bail!("Interactive selection is disabled. Use fav list --json and fav resolve instead.");
+    }
 
     match cli.command.unwrap_or(Command::List(ListArgs {
         tag: Vec::new(),
@@ -551,6 +768,50 @@ fn main() -> Result<()> {
         smart: false,
         show_notes: false,
     })) {
+        Command::Schema => unreachable!(),
+        Command::Ensure(args) => {
+            let path = normalize_path(&args.path.unwrap_or(env::current_dir()?))?
+                .to_string_lossy()
+                .to_string();
+            if let Some(alias) = args.alias.as_deref() {
+                validate_alias(alias)?;
+            }
+            let index = store.items.iter().position(|item| item.path == path);
+            if let Some(alias) = args.alias.as_deref() {
+                if let Some(index) = index {
+                    ensure_unique_alias_except(&store, alias, index)?;
+                } else {
+                    ensure_unique_alias(&store, alias)?;
+                }
+            }
+            let index = index.unwrap_or_else(|| {
+                let id = store.next_id.max(1);
+                store.next_id = id + 1;
+                store.items.push(Favorite {
+                    id,
+                    path,
+                    alias: None,
+                    tags: Vec::new(),
+                    note: None,
+                    uses: 0,
+                    last_used: None,
+                });
+                store.items.len() - 1
+            });
+            let item = &mut store.items[index];
+            if let Some(alias) = args.alias {
+                item.alias = Some(alias);
+            }
+            if let Some(note) = args.note {
+                item.note = Some(note);
+            }
+            item.tags.extend(normalize_tags(args.tag));
+            item.tags.sort();
+            item.tags.dedup();
+            automation::data(serde_json::to_value(&*item)?);
+            println!("{}", item.id);
+            save_store(&store_path, &store)?;
+        }
         Command::Add(args) => {
             let path = args
                 .path
@@ -624,16 +885,41 @@ fn main() -> Result<()> {
                 smart: args.smart,
                 show_notes: args.show_notes,
             };
-            let count = list_items(&store, &filters, &opts)?;
+            let count = if cli.json {
+                let mut items = filtered_items(&store, &filters);
+                sort_items(
+                    &mut items,
+                    opts.sort,
+                    opts.reverse,
+                    &filters,
+                    opts.smart,
+                    None,
+                );
+                automation::data(serde_json::to_value(&items)?);
+                items.len()
+            } else {
+                list_items(&store, &filters, &opts)?
+            };
             if count == 0 {
                 eprintln!("No favorites matched. Try: fav add, fav list --search <term>");
             }
         }
+        Command::Resolve(args) => {
+            let idx = resolve_target_index(&store, &args.target)?;
+            let path = format_path(&store.items[idx].path, args.path_format)?;
+            automation::data(serde_json::json!({"id": store.items[idx].id, "path": path}));
+            println!("{path}");
+        }
         Command::Get(args) => {
             let idx = resolve_target_index(&store, &args.target)?;
-            mark_used(&mut store.items[idx]);
+            if !args.no_touch {
+                mark_used(&mut store.items[idx]);
+            }
             let output = format_path(store.items[idx].path.as_str(), args.path_format)?;
-            save_store(&store_path, &store)?;
+            if !args.no_touch {
+                save_store(&store_path, &store)?;
+            }
+            automation::data(serde_json::json!({"id": store.items[idx].id, "path": output}));
             println!("{output}");
         }
         Command::Meta(args) => {
@@ -659,7 +945,7 @@ fn main() -> Result<()> {
             if args.set_tags && !has_add_tags {
                 bail!("--set-tags can only be used with --tag");
             }
-            if args.query.is_some() && !args.yes {
+            if args.query.is_some() && !args.yes && !dry_run {
                 bail!("Use --yes with --query to update matching favorites.");
             }
             if !has_alias && !has_clear_alias && tag_actions == 0 && !has_note && !has_clear_note {
@@ -787,8 +1073,12 @@ fn main() -> Result<()> {
                 smart: args.smart,
                 show_notes: false,
             };
+            automation::unlock();
             let selection = pick_item(&store, &filters, &opts)?;
             if let Some(id) = selection {
+                automation::lock(&store_path)?;
+                store = load_store(&store_path)?;
+                automation::before(serde_json::to_value(&store)?);
                 let idx = store
                     .items
                     .iter()
@@ -801,8 +1091,12 @@ fn main() -> Result<()> {
             }
         }
         Command::Tui(args) => {
+            automation::unlock();
             let selection = run_tui(&store, &args)?;
             if let Some(id) = selection {
+                automation::lock(&store_path)?;
+                store = load_store(&store_path)?;
+                automation::before(serde_json::to_value(&store)?);
                 let idx = store
                     .items
                     .iter()
@@ -823,7 +1117,12 @@ fn main() -> Result<()> {
             }
             if args.export {
                 let has_file = args.file.is_some();
-                export_store(&store, args.file)?;
+                if cli.json {
+                    automation::data(serde_json::to_value(&store)?);
+                }
+                if !cli.json || args.file.is_some() {
+                    export_store(&store, args.file)?;
+                }
                 if has_file {
                     eprintln!("Exported {} favorites.", store.items.len());
                 }
@@ -840,6 +1139,13 @@ fn main() -> Result<()> {
             }
         }
         Command::Health(args) => {
+            automation::data(serde_json::to_value(
+                store
+                    .items
+                    .iter()
+                    .filter(|item| !Path::new(&item.path).exists())
+                    .collect::<Vec<_>>(),
+            )?);
             if args.prune {
                 let removed = prune_missing(&mut store)?;
                 save_store(&store_path, &store)?;
@@ -850,15 +1156,17 @@ fn main() -> Result<()> {
         }
         Command::With(args) => {
             let idx = resolve_target_index(&store, &args.target)?;
-            mark_used(&mut store.items[idx]);
+            if !dry_run {
+                mark_used(&mut store.items[idx]);
+            }
             let path = format_path(store.items[idx].path.as_str(), args.path_format)?;
             save_store(&store_path, &store)?;
-            run_with_command(&args.command, &path, args.dry_run)?;
+            run_with_command(&args.command, &path, dry_run)?;
         }
         Command::Rm(args) => {
             let indices =
                 resolve_target_indices(&store, args.target.as_deref(), args.query.as_deref())?;
-            if args.query.is_some() && !args.yes {
+            if args.query.is_some() && !args.yes && !dry_run {
                 bail!("Use --yes with --query to remove matching favorites.");
             }
             let removed = indices.len();
@@ -874,17 +1182,21 @@ fn main() -> Result<()> {
         }
         Command::Shell(args) => match args.command {
             ShellCommand::Init(args) => {
-                println!("{}", render_shell_init(args.shell));
+                let script = render_shell_init(args.shell);
+                automation::data(serde_json::json!({"script": script}));
+                println!("{script}");
             }
         },
         Command::Open(args) => {
             let idx = resolve_target_index(&store, &args.target)?;
             let path = store.items[idx].path.clone();
-            if args.dry_run {
+            if dry_run {
+                automation::data(serde_json::json!({"program": opener_program()?, "args": [path]}));
                 println!("{}", render_open_command(&path)?);
             } else {
                 mark_used(&mut store.items[idx]);
                 save_store(&store_path, &store)?;
+                automation::unlock();
                 run_open_command(&path)?;
             }
         }
@@ -907,6 +1219,7 @@ fn main() -> Result<()> {
                 println!("Added preset.");
             }
             PresetCommand::List => {
+                automation::data(serde_json::to_value(&store.presets)?);
                 for preset in &store.presets {
                     println!(
                         "{}\t{}\t{}",
@@ -920,11 +1233,11 @@ fn main() -> Result<()> {
                 let preset = find_preset(&store, &args.name)?.clone();
                 let idx = resolve_target_index(&store, &args.target)?;
                 let path = format_path(store.items[idx].path.as_str(), args.path_format)?;
-                if !args.dry_run {
+                if !dry_run {
                     mark_used(&mut store.items[idx]);
                     save_store(&store_path, &store)?;
                 }
-                run_with_command(&preset.command, &path, args.dry_run)?;
+                run_with_command(&preset.command, &path, dry_run)?;
             }
             PresetCommand::Rm(args) => {
                 let before = store.presets.len();
@@ -938,11 +1251,19 @@ fn main() -> Result<()> {
         },
         Command::Doctor(args) => match args.command {
             DoctorCommand::Duplicates => {
+                let duplicates = duplicate_index(&store);
+                automation::data(serde_json::to_value(
+                    store
+                        .items
+                        .iter()
+                        .filter(|item| is_duplicate_item(item, &duplicates))
+                        .collect::<Vec<_>>(),
+                )?);
                 report_duplicates(&store)?;
             }
             DoctorCommand::Repair(args) => {
-                let repaired = repair_paths(&mut store, &args.from, &args.to, args.dry_run)?;
-                if !args.dry_run {
+                let repaired = repair_paths(&mut store, &args.from, &args.to, false)?;
+                if !dry_run {
                     save_store(&store_path, &store)?;
                 }
                 eprintln!("Repaired {} favorites.", repaired);
@@ -951,6 +1272,9 @@ fn main() -> Result<()> {
         Command::Import(args) => match args.command {
             ImportCommand::History(args) => {
                 let report = import_history(&mut store, &args)?;
+                automation::data(
+                    serde_json::json!({"added": report.added, "skipped": report.skipped}),
+                );
                 save_store(&store_path, &store)?;
                 eprintln!(
                     "Imported {} favorites (skipped {}).",
@@ -959,6 +1283,9 @@ fn main() -> Result<()> {
             }
             ImportCommand::Paths(args) => {
                 let report = import_paths_file(&mut store, &args)?;
+                automation::data(
+                    serde_json::json!({"added": report.added, "skipped": report.skipped}),
+                );
                 save_store(&store_path, &store)?;
                 eprintln!(
                     "Imported {} favorites (skipped {}).",
@@ -968,9 +1295,11 @@ fn main() -> Result<()> {
         },
     }
 
+    automation::after(serde_json::to_value(&store)?);
     Ok(())
 }
 
+#[cfg(test)]
 fn try_handle_alias_or_get(args: &[String]) -> Result<Option<String>> {
     if args.len() < 2 {
         return Ok(None);
@@ -1038,6 +1367,9 @@ fn is_reserved_word(value: &str) -> bool {
     matches!(
         value,
         "add"
+            | "ensure"
+            | "resolve"
+            | "schema"
             | "list"
             | "get"
             | "meta"
@@ -1081,30 +1413,55 @@ fn load_store(store_path: &Path) -> Result<Store> {
 
     let data = fs::read_to_string(store_path).context("read favorites store")?;
     let mut store: Store = serde_json::from_str(&data).context("parse favorites store")?;
+    validate_store(&store)?;
     sync_store(&mut store);
     Ok(store)
 }
 
 fn save_store(path: &Path, store: &Store) -> Result<()> {
+    if automation::is_dry_run() {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("create data directory")?;
     }
-    let tmp_path = path.with_extension("json.tmp");
     let data = serde_json::to_vec(store).context("serialize favorites store")?;
-    fs::write(&tmp_path, data).context("write favorites store")?;
-    fs::rename(&tmp_path, path).context("save favorites store")?;
+    let parent = path
+        .parent()
+        .context("config requires a parent directory")?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).context("create temporary store")?;
+    temporary
+        .write_all(&data)
+        .context("write favorites store")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("sync favorites store")?;
+    temporary.persist(path).context("save favorites store")?;
     Ok(())
 }
 
 fn resolve_config_path(override_path: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = override_path {
-        return expand_and_absolute(path);
+    let path = if let Some(path) = override_path {
+        expand_and_absolute(path)?
+    } else if let Some(env_path) = env::var_os("FAV_CONFIG") {
+        expand_and_absolute(Path::new(&env_path))?
+    } else {
+        UserDirs::new()
+            .context("resolve home directory")?
+            .home_dir()
+            .join(".fav.config")
+    };
+    if path.exists() {
+        return path.canonicalize().context("resolve favorites store");
     }
-    if let Some(env_path) = env::var_os("FAV_CONFIG") {
-        return expand_and_absolute(Path::new(&env_path));
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+        && let Ok(parent) = parent.canonicalize()
+    {
+        return Ok(parent.join(name));
     }
-    let user_dirs = UserDirs::new().context("resolve home directory")?;
-    Ok(user_dirs.home_dir().join(".fav.config"))
+    Ok(path)
 }
 
 fn sync_store(store: &mut Store) {
@@ -1119,6 +1476,13 @@ fn sync_store(store: &mut Store) {
     store
         .presets
         .sort_by(|left, right| left.name.cmp(&right.name));
+}
+
+fn validate_store(store: &Store) -> Result<()> {
+    if store.presets.iter().any(|preset| preset.command.is_empty()) {
+        bail!("Invalid favorites store: presets require a non-empty command");
+    }
+    Ok(())
 }
 
 struct Filters {
@@ -1335,14 +1699,14 @@ struct DuplicateIndex {
 
 fn parse_query(input: &str) -> Result<QuerySpec> {
     let mut terms = Vec::new();
-    for raw_token in input.split_whitespace() {
+    for raw_token in tokenize_query(input)? {
         let (negated, token) = if let Some(rest) = raw_token.strip_prefix('-') {
             (true, rest)
         } else {
-            (false, raw_token)
+            (false, raw_token.as_str())
         };
         if token.is_empty() {
-            continue;
+            bail!("A negation must include a query term. Example: -tag:archive");
         }
 
         let (field, value) = if let Some((field, value)) = token.split_once(':') {
@@ -1358,23 +1722,24 @@ fn parse_query(input: &str) -> Result<QuerySpec> {
                     "Unsupported query field '{field}'. Try alias:, path:, tag:, note:, id:, missing:, or dupe:."
                 ),
             };
-            (field, value.trim().to_ascii_lowercase())
+            (field, value.trim().to_lowercase())
         } else {
-            (QueryField::Any, token.trim().to_ascii_lowercase())
+            (QueryField::Any, token.trim().to_lowercase())
         };
 
-        if value.is_empty() {
+        if value.is_empty() || value == "=" {
             bail!("Query terms cannot be empty. Example: tag:work");
         }
 
         match field {
             QueryField::Id => {
                 value
+                    .trim_start_matches('=')
                     .parse::<u64>()
                     .with_context(|| format!("Invalid id query '{value}'. Example: id:3"))?;
             }
             QueryField::Missing | QueryField::Dupe => {
-                parse_bool_term(&value)?;
+                parse_bool_term(value.trim_start_matches('='))?;
             }
             _ => {}
         }
@@ -1389,6 +1754,55 @@ fn parse_query(input: &str) -> Result<QuerySpec> {
         bail!("Query cannot be empty. Example: tag:work");
     }
     Ok(QuerySpec { terms })
+}
+
+fn tokenize_query(input: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if ch == delimiter {
+                quote = None;
+            } else {
+                token.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !token.is_empty() {
+                tokens.push(std::mem::take(&mut token));
+            }
+        } else {
+            token.push(ch);
+        }
+    }
+    if escaped || quote.is_some() {
+        bail!("Unterminated quote or escape in query");
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    Ok(tokens)
+}
+
+fn query_text_matches(candidate: &str, value: &str) -> bool {
+    let candidate = candidate.to_lowercase();
+    if let Some(exact) = value.strip_prefix('=') {
+        candidate == exact
+    } else {
+        candidate.contains(value)
+    }
 }
 
 fn parse_bool_term(value: &str) -> Result<bool> {
@@ -1442,27 +1856,39 @@ fn is_duplicate_item(item: &Favorite, duplicates: &DuplicateIndex) -> bool {
 fn matches_query_spec(item: &Favorite, query: &QuerySpec, duplicates: &DuplicateIndex) -> bool {
     query.terms.iter().all(|term| {
         let matched = match term.field {
-            QueryField::Any => matches_text_query(item, &term.value),
+            QueryField::Any => {
+                query_text_matches(&item.path, &term.value)
+                    || item
+                        .alias
+                        .as_deref()
+                        .is_some_and(|v| query_text_matches(v, &term.value))
+                    || item
+                        .note
+                        .as_deref()
+                        .is_some_and(|v| query_text_matches(v, &term.value))
+                    || item.tags.iter().any(|v| query_text_matches(v, &term.value))
+            }
             QueryField::Alias => item
                 .alias
                 .as_ref()
-                .is_some_and(|alias| alias.to_ascii_lowercase().contains(&term.value)),
-            QueryField::Path => item.path.to_ascii_lowercase().contains(&term.value),
+                .is_some_and(|alias| query_text_matches(alias, &term.value)),
+            QueryField::Path => query_text_matches(&item.path, &term.value),
             QueryField::Tag => item
                 .tags
                 .iter()
-                .any(|tag| tag.to_ascii_lowercase().contains(&term.value)),
+                .any(|tag| query_text_matches(tag, &term.value)),
             QueryField::Note => item
                 .note
                 .as_ref()
-                .is_some_and(|note| note.to_ascii_lowercase().contains(&term.value)),
-            QueryField::Id => item.id.to_string() == term.value,
+                .is_some_and(|note| query_text_matches(note, &term.value)),
+            QueryField::Id => item.id.to_string() == term.value.trim_start_matches('='),
             QueryField::Missing => {
                 Path::new(item.path.as_str()).exists()
-                    != parse_bool_term(&term.value).unwrap_or(false)
+                    != parse_bool_term(term.value.trim_start_matches('=')).unwrap_or(false)
             }
             QueryField::Dupe => {
-                is_duplicate_item(item, duplicates) == parse_bool_term(&term.value).unwrap_or(false)
+                is_duplicate_item(item, duplicates)
+                    == parse_bool_term(term.value.trim_start_matches('=')).unwrap_or(false)
             }
         };
         if term.negated { !matched } else { matched }
@@ -1504,6 +1930,10 @@ fn smart_score(item: &Favorite, filters: &Filters, query_hint: Option<&str>) -> 
     }
 
     for term in needles {
+        let term = QueryTerm {
+            value: term.value.trim_start_matches('=').to_string(),
+            ..term
+        };
         score += match term.field {
             QueryField::Alias => rank_text(item.alias.as_deref(), &term.value, 1500),
             QueryField::Path => rank_text(Some(item.path.as_str()), &term.value, 1300),
@@ -1848,6 +2278,10 @@ fn export_store(store: &Store, file: Option<PathBuf>) -> Result<()> {
     let data = serde_json::to_vec_pretty(store).context("serialize store")?;
     match file {
         Some(path) => {
+            if automation::is_dry_run() {
+                println!("Would export to {}", path.display());
+                return Ok(());
+            }
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -1880,6 +2314,7 @@ fn import_store(file: Option<PathBuf>) -> Result<Store> {
     }
     let mut store: Store =
         serde_json::from_str(&data).context("parse store (expected fav JSON)")?;
+    validate_store(&store)?;
     sync_store(&mut store);
     Ok(store)
 }
@@ -1987,15 +2422,35 @@ fn shell_escape(value: &str) -> String {
 
 fn run_with_command(command: &[String], path: &str, dry_run: bool) -> Result<()> {
     let (program, args) = build_command_parts(command, path)?;
+    automation::data(serde_json::json!({"program": program, "args": args}));
     if dry_run {
         println!("{}", render_command_line(&program, &args));
         return Ok(());
     }
 
+    automation::unlock();
     let mut cmd = ProcessCommand::new(program);
-    let status = cmd.args(args).status().context("run command")?;
-    let code = status.code().unwrap_or(1);
-    std::process::exit(code);
+    if automation::is_json() {
+        let output = cmd.args(args).output().context("run command")?;
+        automation::data(serde_json::json!({"exit_code": output.status.code(),
+            "stdout": String::from_utf8_lossy(&output.stdout), "stderr": String::from_utf8_lossy(&output.stderr)}));
+        if !output.status.success() {
+            return Err(automation::Failure {
+                code: "execution_failed",
+                exit: 7,
+                message: format!(
+                    "Command exited with status {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            }
+            .into());
+        }
+        Ok(())
+    } else {
+        let status = cmd.args(args).status().context("run command")?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 fn render_shell_init(shell: ShellKind) -> String {
@@ -2056,6 +2511,7 @@ fn opener_program() -> Result<&'static str> {
     match env::consts::OS {
         "macos" => Ok("open"),
         "linux" => Ok("xdg-open"),
+        "windows" => Ok("explorer.exe"),
         other => bail!("No supported opener for platform '{other}'."),
     }
 }
@@ -2065,6 +2521,19 @@ fn render_open_command(path: &str) -> Result<String> {
 }
 
 fn run_open_command(path: &str) -> Result<()> {
+    if automation::is_json() {
+        let output = ProcessCommand::new(opener_program()?)
+            .arg(path)
+            .output()
+            .context("run opener")?;
+        automation::data(
+            serde_json::json!({"exit_code": output.status.code(), "stdout": String::from_utf8_lossy(&output.stdout), "stderr": String::from_utf8_lossy(&output.stderr)}),
+        );
+        if !output.status.success() {
+            bail!("Open command failed for {path}");
+        }
+        return Ok(());
+    }
     let status = ProcessCommand::new(opener_program()?)
         .arg(path)
         .status()
@@ -2431,6 +2900,7 @@ fn decode_file_url(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::fs;

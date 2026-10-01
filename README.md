@@ -1,6 +1,11 @@
 # fav
 
-Speed-dial for files and folders.
+[![CI](https://github.com/dan-hart/fav/actions/workflows/ci.yml/badge.svg)](https://github.com/dan-hart/fav/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/dan-hart/fav)](https://github.com/dan-hart/fav/releases)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Homebrew](https://img.shields.io/badge/Homebrew-dan--hart%2Ftap-orange)](https://github.com/dan-hart/homebrew-tap)
+
+**Your filesystem. On speed dial. Ready for scripts and AI agents.**
 
 Remember paths once, then use them everywhere.
 
@@ -9,13 +14,44 @@ Remember paths once, then use them everywhere.
 - Notes, structured queries, and smarter ranking
 - `fav with` runs commands with a favorite path (no subshells)
 - Shell helpers, presets, duplicate checks, repair tools, and importers
-- Works on macOS and Linux
+- Tested on macOS, Linux, and Windows
+- Versioned JSON, command discovery, previews, and safe concurrent updates
+
+## Discover. Resolve. Preview. Apply.
+
+```bash
+# Discover commands, arguments, examples, and response contracts
+fav schema
+
+# Safe to retry: same path, same ID, preserved usage
+fav ensure ~/projects/site --alias site --tag active --note "Release checklist" --json
+
+# Look up a path without changing its ranking
+fav resolve site --json
+
+# Preview precise batch changes before applying
+fav meta --query 'note:="release checklist"' --tag release --dry-run --json
+fav meta --query 'note:="release checklist"' --tag release --yes --json
+
+# Inspect the exact argument array before execution
+fav with site --dry-run --json -- rg TODO {}
+
+# Find active favorites without parsing a table
+fav list --query 'tag:=active -tag:=archive' --json
+```
+
+`--json` emits one JSON document. `--non-interactive` refuses interactive selection.
+`--dry-run` previews changes without saving config contents or launching commands.
+Existing path output and `list --format json` remain available for scripts.
 
 ## Install
 
 ```bash
 # Homebrew
 brew install dan-hart/tap/fav
+
+# upgrade
+brew update && brew upgrade dan-hart/tap/fav
 
 # local source checkout
 cargo install --path .
@@ -106,6 +142,13 @@ On first run, the config file path itself is added as favorite id `1`.
 ## Docs
 
 Full documentation lives in `docs/`.
+
+- [Command reference](docs/commands.md): flags and examples for every command
+- [Agent integration](docs/agents.md): response schema, exit codes, and retries
+- [Automation recipes](docs/automation.md): batching, backups, and concurrency
+- [Compatibility](docs/compatibility.md): platforms, shells, and unusual paths
+- [Quickstart](docs/quickstart.md): your first favorites
+- [Release checklist](RELEASE.md): verification and Homebrew publishing
 
 ## Contributing
 

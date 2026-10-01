@@ -68,6 +68,309 @@ fn find_by_alias(items: &[Value], alias: &str) -> Value {
         .expect("item")
 }
 
+fn response(args: &[&str], config: &Path) -> Value {
+    let mut args = args.to_vec();
+    args.insert(0, "--json");
+    serde_json::from_str(&output_fav(&args, config)).expect("response JSON")
+}
+
+#[test]
+fn schema_is_available_without_config_and_describes_global_flags() {
+    let (dir, config) = temp_config();
+    let schema: Value = serde_json::from_str(&output_fav(&["schema"], &config)).unwrap();
+    assert_eq!(schema["schema_version"], 1);
+    assert!(
+        schema["cli"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "ensure")
+    );
+    assert!(
+        schema["cli"]["arguments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["long"] == "non-interactive")
+    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn ensure_retries_preserve_id_usage_and_unsupplied_metadata() {
+    let (dir, config) = temp_config();
+    let path = dir.path().join("notes with spaces.txt");
+    fs::write(&path, "notes").unwrap();
+    let first = response(
+        &[
+            "ensure",
+            path.to_str().unwrap(),
+            "--alias",
+            "notes",
+            "--note",
+            "Keep me",
+            "--tag",
+            "active",
+        ],
+        &config,
+    );
+    let second = response(
+        &["ensure", path.to_str().unwrap(), "--tag", "active"],
+        &config,
+    );
+    assert_eq!(first["data"]["id"], second["data"]["id"]);
+    assert_eq!(second["changed_ids"], serde_json::json!([]));
+    assert_eq!(second["data"]["note"], "Keep me");
+    assert_eq!(second["data"]["uses"], 0);
+}
+
+#[test]
+fn resolve_and_no_touch_preserve_config_bytes() {
+    let (dir, config) = temp_config();
+    add_with_alias(&config, dir.path(), "project", "active");
+    let before = fs::read(&config).unwrap();
+    let result = response(&["resolve", "project"], &config);
+    assert_eq!(
+        result["data"]["path"],
+        dir.path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    response(&["get", "project", "--no-touch"], &config);
+    response(&["project", "--no-touch"], &config);
+    assert_eq!(before, fs::read(&config).unwrap());
+}
+
+#[test]
+fn mutation_previews_report_proposals_without_writing() {
+    let (dir, config) = temp_config();
+    add_with_alias(&config, dir.path(), "project", "active");
+    let before = fs::read(&config).unwrap();
+    let meta = response(
+        &[
+            "meta",
+            "--query",
+            "alias:=project",
+            "--note",
+            "New note",
+            "--dry-run",
+        ],
+        &config,
+    );
+    assert_eq!(meta["dry_run"], true);
+    assert_eq!(meta["changes"][0]["after"]["note"], "New note");
+    let removed = response(&["rm", "--query", "alias:=project", "--dry-run"], &config);
+    assert_eq!(removed["changes"][0]["before"]["alias"], "project");
+    assert!(removed["changes"][0]["after"].is_null());
+    assert_eq!(before, fs::read(&config).unwrap());
+}
+
+#[test]
+fn preview_import_prune_and_export_do_not_write() {
+    let (dir, config) = temp_config();
+    let path = dir.path().join("missing-soon");
+    fs::write(&path, "test").unwrap();
+    add_with_alias(&config, &path, "missing", "test");
+    fs::remove_file(&path).unwrap();
+    let before = fs::read(&config).unwrap();
+    let pruned = response(&["health", "--prune", "--dry-run"], &config);
+    assert_eq!(pruned["changed_ids"].as_array().unwrap().len(), 1);
+    let paths = dir.path().join("paths.json");
+    fs::write(
+        &paths,
+        serde_json::to_vec(&vec![dir.path().to_str().unwrap()]).unwrap(),
+    )
+    .unwrap();
+    let imported = response(
+        &[
+            "import",
+            "paths",
+            "--file",
+            paths.to_str().unwrap(),
+            "--dry-run",
+        ],
+        &config,
+    );
+    assert_eq!(imported["changed_ids"].as_array().unwrap().len(), 1);
+    let export = dir.path().join("export.json");
+    response(
+        &[
+            "io",
+            "--export",
+            "--file",
+            export.to_str().unwrap(),
+            "--dry-run",
+        ],
+        &config,
+    );
+    assert!(!export.exists());
+    assert_eq!(before, fs::read(&config).unwrap());
+}
+
+#[test]
+fn quoted_exact_queries_and_negation_target_only_expected_rows() {
+    let (dir, config) = temp_config();
+    response(
+        &[
+            "ensure",
+            dir.path().to_str().unwrap(),
+            "--alias",
+            "project",
+            "--note",
+            "Release checklist",
+        ],
+        &config,
+    );
+    let other = dir.path().join("other");
+    fs::create_dir(&other).unwrap();
+    response(
+        &[
+            "ensure",
+            other.to_str().unwrap(),
+            "--alias",
+            "project-old",
+            "--note",
+            "Release checklist draft",
+        ],
+        &config,
+    );
+    let result = response(
+        &[
+            "list",
+            "--query",
+            "note:=\"release checklist\" -alias:=project-old",
+        ],
+        &config,
+    );
+    assert_eq!(result["data"].as_array().unwrap().len(), 1);
+    assert_eq!(result["data"][0]["alias"], "project");
+    for query in ["", "   ", "-", "note:\"unterminated", "alias:=", "id:nope"] {
+        run_fav(&["--json", "rm", "--query", query, "--yes"], &config).code(2);
+    }
+    assert_eq!(list_json(&config).len(), 3);
+}
+
+#[test]
+fn json_errors_and_interactive_refusal_are_machine_readable() {
+    let (_dir, config) = temp_config();
+    let mut cmd = cargo_bin_cmd!("fav");
+    let output = cmd
+        .env("FAV_CONFIG", &config)
+        .args(["get", "999", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "not_found");
+    assert!(
+        error["error"]["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains("list")
+    );
+    for command in ["pick", "tui"] {
+        run_fav(&[command, "--non-interactive"], &config)
+            .code(2)
+            .stderr(predicate::str::contains("disabled"));
+        run_fav(&[command, "--json"], &config).code(2);
+    }
+    let mut cmd = cargo_bin_cmd!("fav");
+    let output = cmd
+        .env("FAV_CONFIG", &config)
+        .args(["list", "--bogus", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["error"]["code"],
+        "invalid_arguments"
+    );
+}
+
+#[test]
+fn concurrent_additions_do_not_lose_updates() {
+    let (dir, config) = temp_config();
+    let mut children = Vec::new();
+    for index in 0..12 {
+        let path = dir.path().join(format!("file-{index}"));
+        fs::write(&path, "data").unwrap();
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("fav"));
+        children.push(
+            cmd.env("FAV_CONFIG", &config)
+                .arg("ensure")
+                .arg(path)
+                .arg("--json")
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    assert_eq!(list_json(&config).len(), 13);
+    assert!(!config.with_extension("json.tmp").exists());
+}
+
+#[test]
+fn unusual_paths_are_preserved() {
+    let (dir, config) = temp_config();
+    for name in ["-leading-hyphen", "space name", "caf\u{e9}-\u{1f680}"] {
+        let path = dir.path().join(name);
+        fs::write(&path, "ok").unwrap();
+        let added = response(&["ensure", path.to_str().unwrap()], &config);
+        let id = added["data"]["id"].to_string();
+        let resolved = response(&["resolve", &id], &config);
+        assert_eq!(
+            resolved["data"]["path"],
+            path.canonicalize().unwrap().to_string_lossy().as_ref()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_ensure_uses_canonical_identity() {
+    let (dir, config) = temp_config();
+    let target = dir.path().join("target");
+    let link = dir.path().join("link");
+    fs::write(&target, "ok").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let first = response(&["ensure", target.to_str().unwrap()], &config);
+    let second = response(&["ensure", link.to_str().unwrap()], &config);
+    assert_eq!(first["data"]["id"], second["data"]["id"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn json_execution_captures_output_and_reports_child_failure() {
+    let (dir, config) = temp_config();
+    add_with_alias(&config, dir.path(), "project", "active");
+    let preview = response(
+        &["with", "project", "--dry-run", "--", "printf", "%s", "{}"],
+        &config,
+    );
+    assert_eq!(preview["changed_ids"], serde_json::json!([]));
+    assert_eq!(preview["data"]["program"], "printf");
+    let result = response(&["with", "project", "--", "printf", "%s", "{}"], &config);
+    assert_eq!(result["data"]["exit_code"], 0);
+    assert_eq!(
+        result["data"]["stdout"],
+        dir.path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    run_fav(
+        &["with", "project", "--json", "--", "sh", "-c", "exit 9"],
+        &config,
+    )
+    .code(7)
+    .stdout(predicate::str::contains("execution_failed"));
+}
+
 #[test]
 fn add_list_alias_tag_flow() {
     let (_dir, config) = temp_config();
@@ -169,6 +472,7 @@ fn check_and_prune_missing() {
 }
 
 #[test]
+#[cfg(unix)]
 fn with_command_inserts_path() {
     let (_dir, config) = temp_config();
     let data_dir = tempfile::tempdir().expect("data dir");
@@ -184,6 +488,46 @@ fn with_command_inserts_path() {
         &config,
     );
     assert_eq!(output, file_path.canonicalize().unwrap().to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn config_symlink_survives_atomic_updates() {
+    let (dir, config) = temp_config();
+    let file = dir.path().join("target.txt");
+    fs::write(&file, "test").unwrap();
+    response(
+        &["ensure", file.to_str().unwrap(), "--alias", "first"],
+        &config,
+    );
+    let link = dir.path().join("config-link.json");
+    std::os::unix::fs::symlink(&config, &link).unwrap();
+    response(
+        &["ensure", file.to_str().unwrap(), "--alias", "second"],
+        &link,
+    );
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        response(&["resolve", "second"], &config)["data"]["path"],
+        file.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+}
+
+#[test]
+fn malformed_preset_is_rejected_without_panic_or_write() {
+    let (_dir, config) = temp_config();
+    let contents =
+        r#"{"version":2,"next_id":1,"items":[],"presets":[{"name":"bad","command":[]}]}"#;
+    fs::write(&config, contents).unwrap();
+    run_fav(&["--json", "preset", "list"], &config)
+        .code(6)
+        .stdout(predicate::str::contains("storage_error"));
+    assert_eq!(fs::read_to_string(&config).unwrap(), contents);
 }
 
 #[test]
@@ -306,7 +650,7 @@ fn export_import_merge_and_with_append() {
     fs::write(&file_one, "one").expect("write");
     fs::write(&file_two, "two").expect("write");
 
-    let id_one = add_with_alias(&config, &file_one, "one", "work");
+    let _id_one = add_with_alias(&config, &file_one, "one", "work");
     let _id_two = add_with_alias(&config, &file_two, "two", "ops");
 
     let export_stdout = output_fav(&["io", "--export"], &config);
@@ -346,14 +690,17 @@ fn export_import_merge_and_with_append() {
     let merged = list_json(&config2);
     assert!(merged.len() >= 4);
 
-    let with_append = output_fav(
-        &["with", &id_one.to_string(), "--", "printf", "%s"],
-        &config,
-    );
-    assert_eq!(
-        with_append,
-        file_one.canonicalize().unwrap().to_string_lossy()
-    );
+    #[cfg(unix)]
+    {
+        let with_append = output_fav(
+            &["with", &_id_one.to_string(), "--", "printf", "%s"],
+            &config,
+        );
+        assert_eq!(
+            with_append,
+            file_one.canonicalize().unwrap().to_string_lossy()
+        );
+    }
 }
 
 #[test]

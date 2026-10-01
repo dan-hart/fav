@@ -1,6 +1,6 @@
 [package]
 name = "fav"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Speed-dial for files and folders."
@@ -13,6 +13,8 @@ documentation = "https://docs.rs/fav"
 
 [dependencies]
 anyhow = "1.0.95"
+fs2 = "0.4.3"
+tempfile = "3.10.1"
 clap = { version = "4.5.28", features = ["derive"] }
 crossterm = "0.28.1"
 directories = "5.0.1"

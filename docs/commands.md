@@ -1,5 +1,53 @@
 # Command reference
 
+## Automation Options (All Commands)
+
+`--json` emits the version-1 response envelope. `--non-interactive` refuses selectors
+and terminal stdin reads. `--dry-run` previews every mutation/execution without saving
+config contents. Global flags must precede the execution `--` separator.
+
+See [Agent integration](agents.md) for response fields/exit codes and
+[Automation recipes](automation.md) for safe batching/concurrency.
+
+## schema
+
+`fav schema` prints recursive discovery JSON without loading config.
+`fav schema --json` wraps it in the standard response envelope.
+
+## ensure
+
+`fav ensure [path] [--alias name] [--tag tag...] [--note text] [--id-only]`
+
+Register an existing path or return its existing ID. Supplied alias/note replace those
+fields; omitted metadata is preserved and tags are merged. Retries preserve ID/usage.
+
+```bash
+fav ensure ./project --alias project --tag repo --json
+fav ensure ./project --dry-run --json
+```
+
+## resolve
+
+`fav resolve <target> [--path-format tilde|absolute|relative]`
+
+Resolve without changing usage. `get --no-touch` has the same behavior.
+
+```bash
+fav resolve project --json
+fav get project --no-touch
+```
+
+## Precise Queries
+
+Terms are ANDed. Quote multiword values and use = for exact matching:
+
+```bash
+fav list --query 'note:="release checklist" -tag:=archive' --json
+fav meta --query 'alias:=project' --note 'Ready to ship' --dry-run --json
+```
+
+Incomplete quotes/escapes, bare negation, empty terms, and invalid fields fail with exit 2.
+
 ## Top-level
 
 - Global options: `--config <path>` (defaults to `~/.fav.config` or `FAV_CONFIG` when set)
